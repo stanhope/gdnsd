@@ -1796,6 +1796,10 @@ static unsigned answer_from_db(dnsp_ctx_t* ctx, dnspacket_stats_t* stats, const 
     const ltree_rrset_t* res_rrsets = NULL;
     wire_dns_header_t* res_hdr = (wire_dns_header_t*)ctx->packet;
 
+    // @componentry, copy or pointer??? copy for now.
+    strcpy((char*)ctx->client_info.qname, (const char*)qname);
+    ctx->client_info.res_hdr = res_hdr;
+
     ltree_dname_status_t status = DNAME_NOAUTH;
     unsigned auth_depth;
 
@@ -1804,6 +1808,7 @@ static unsigned answer_from_db(dnsp_ctx_t* ctx, dnspacket_stats_t* stats, const 
     zone_t* query_zone = ztree_find_zone_for(qname, &auth_depth);
 
     if(query_zone) { // matches auth space somewhere
+
         resauth = query_zone->root;
 
         unsigned cname_depth = 0;
@@ -1898,6 +1903,7 @@ static unsigned answer_from_db(dnsp_ctx_t* ctx, dnspacket_stats_t* stats, const 
         dmn_assert(status == DNAME_NOAUTH);
         if(!via_cname) {
             res_hdr->flags2 = DNS_RCODE_REFUSED;
+	    printf("REFUSED\n");
             stats_own_inc(&stats->refused);
         }
     }
@@ -2026,6 +2032,7 @@ unsigned process_dns_query(void* ctx_asvoid, dnspacket_stats_t* stats, const dmn
     }
 
     if(ctx->use_edns) {
+
         packet[res_offset++] = '\0'; // domainname part of OPT
         wire_dns_rr_opt_t* opt = (wire_dns_rr_opt_t*)&packet[res_offset];
         res_offset += sizeof_optrr;

@@ -76,7 +76,9 @@ void gdnsd_dyn_addr_max(unsigned v4, unsigned v6);
 typedef struct {
     dmn_anysin_t dns_source;       // address of last source DNS cache/forwarder
     dmn_anysin_t edns_client;      // edns-client-subnet address portion
-    unsigned edns_client_mask; // edns-client-subnet mask portion
+    unsigned edns_client_mask;     // edns-client-subnet mask portion
+    void* res_hdr;
+    uint8_t qname[512];
 } client_info_t;               //  ^(if zero, edns_client is invalid (was not sent))
 
 // Private result structure for dynamic resolution plugins

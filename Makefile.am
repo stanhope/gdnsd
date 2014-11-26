@@ -159,7 +159,8 @@ pkglib_LTLIBRARIES += \
 	plugins/plugin_extfile.la \
 	plugins/plugin_extmon.la \
 	plugins/plugin_metafo.la \
-	plugins/plugin_geoip.la
+	plugins/plugin_geoip.la \
+	plugins/plugin_beacon.la
 
 # simple plugins (in build terms)
 plugins_plugin_http_status_la_SOURCES = plugins/http_status.c
@@ -180,6 +181,8 @@ plugins_plugin_weighted_la_SOURCES    = plugins/weighted.c
 plugins_plugin_weighted_la_LDFLAGS    = -avoid-version -module
 plugins_plugin_extfile_la_SOURCES     = plugins/extfile.c
 plugins_plugin_extfile_la_LDFLAGS     = -avoid-version -module
+plugins_plugin_beacon_la_SOURCES     = plugins/beacon.c
+plugins_plugin_beacon_la_LDFLAGS     = -avoid-version -module
 
 # extmon
 

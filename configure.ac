@@ -135,6 +135,7 @@ AX_APPEND_LINK_FLAGS([\
     $HARDEN_LINKER \
     -Wl,--as-needed \
     -Wl,--gc-sections \
+    -lJudy \
 ],[LDFLAGS],[$CLANG_WERROR])
 
 AX_APPEND_COMPILE_FLAGS([\
