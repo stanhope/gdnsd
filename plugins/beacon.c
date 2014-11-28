@@ -40,6 +40,7 @@ typedef struct {
     char id[5];
     char ip[40];
     char domain[64];
+    char domain_test[64];
     char blackhole_ip[40];
     uint8_t blackhole_as_refused;
     redisContext *redis;
@@ -90,7 +91,7 @@ void* dyn_beacon_timer (void * args V_UNUSED) {
 	    Word_t delta = CFG.event_count - CFG.event_total;
 	    CFG.event_total = CFG.event_count;
 
-	    log_debug("%f TOT=%u NEW=%u", current_time(), (unsigned int)CFG.event_total, (unsigned int)delta);
+	    log_debug("%f beacon new=%u tot=%u", current_time(), (unsigned int)delta, (unsigned int)CFG.event_total);
 
 	    if (delta > 0) {
 
@@ -216,6 +217,13 @@ static bool config_res(const char* resname, unsigned resname_len V_UNUSED, vscf_
 	    const char* val = vscf_simple_get_data(addr);
 	    strcpy(CFG.domain, val);
 	}
+    } else if (strcmp(resname, "domain_test") == 0) {
+	if (vscf_get_type(addr) != VSCF_SIMPLE_T)
+	    log_fatal("plugin_beacon: resource %s: must be a domainname in string form", resname);
+	else {
+	    const char* val = vscf_simple_get_data(addr);
+	    strcpy(CFG.domain_test, val);
+	}
     } else if (strcmp(resname, "blackhole") == 0) {
 	if (vscf_get_type(addr) != VSCF_SIMPLE_T)
 	    log_fatal("plugin_beacon: resource %s: must be an IP address or a domainname in string form", resname);
@@ -251,12 +259,14 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
     CFG.ip[0] = 0;
     CFG.id[0] = 0;
     CFG.domain[0] = 0;
+    CFG.domain_test[0] = 0;
     CFG.blackhole_ip[0] = 0;
     CFG.blackhole_as_refused = 0;
     CFG.redis = NULL;
     CFG.event_cache = (Pvoid_t) NULL;
     CFG.event_total = 0;
     CFG.event_count = 0;
+    strcpy(CFG.event_channel, "beacon");
 
     unsigned residx = 0;
     vscf_hash_iterate(config, false, config_res, &residx);
@@ -286,8 +296,8 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
 	printf("ERROR: Plugin not configured properly\n");
 	exit(1);
     } else {
-	log_debug("plugin_beacon: config id=%s ip=%s domain=%s blackhole=%s blackhole_as_refused=%s",
-		  CFG.id, CFG.ip, CFG.domain, CFG.blackhole_ip, 
+	log_debug("plugin_beacon: config id=%s ip=%s domain=%s domain_test=%s blackhole=%s blackhole_as_refused=%s",
+		  CFG.id, CFG.ip, CFG.domain, CFG.domain_test, CFG.blackhole_ip, 
 		  CFG.blackhole_as_refused ? "true":"false");
     }
 
@@ -304,9 +314,15 @@ int plugin_beacon_map_res(const char* resname V_UNUSED, const uint8_t* origin V_
 
 gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum V_UNUSED, const uint8_t* origin V_UNUSED, const client_info_t* cinfo, dyn_result_t* result) {
 
+    // printf("plugin_beacon_resolve\n");
+
+    double network_time = current_time();
     u_int is_valid = 1;
+    u_int is_test = 0;
     const u_char* qdata = cinfo->qname+1;
     u_char* qname = convert_qname(qdata);
+
+    // printf("..qname=%s\n", qname);
 
     char temp[1024];
     strcpy(temp, (char*)qname);
@@ -316,34 +332,62 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum V_UNUSED, const uint8_t* orig
     char* beacon = strtok_r(NULL, ".", &saveptr);
     domain = saveptr;
 
-    if (cid == NULL || cdata == NULL || beacon == NULL || domain == NULL || strcmp(domain, CFG.domain) != 0) {
-	is_valid = 0;
-    } 
+    struct in_addr client, client_subnet_addr;
+    client.s_addr = cinfo->dns_source.sin.sin_addr.s_addr; 
+    const char* s_client = inet_ntoa(client);
+    char s_edns_client[DMN_ANYSIN_MAXLEN+1];
+    client_subnet_addr.s_addr = cinfo->edns_client.sin.sin_addr.s_addr;
+    if (client_subnet_addr.s_addr == 0)
+	strcpy(s_edns_client, "-");
+    else {
+	sprintf(s_edns_client, "%s/%d", s_client, cinfo->edns_client_mask);
+    }
+	
+    if (cid == NULL || cdata == NULL || beacon == NULL) {
+	if (domain != NULL && strcmp(domain, CFG.domain) != 0) {
+	    is_valid = 0;
+	}
+    } else  {
+	if (domain != NULL && domain[0] == 0) {
+	    int cmp_val = strcmp((char*)qname, CFG.domain_test);
+	    if (cmp_val == 0) {
+		is_test = 1;
+	    }
+	}
+    }
+
+    if (!is_test) {
+	// cid can only be 4 characters
+	if (strlen(cid) != 4)
+	    is_valid = 0;
+    
+	// cdata can be <= 16 characters. Trim to 16 rather than concluding invalid.
+	if (strlen(cdata) > 16)
+	    cdata[16] = 0;
+    
+	// beacon must be 45 characters (e.g. use2ae4160014047f846aab247986cd7d164d21f4ceb5)
+	if (strlen(beacon) != 45)
+	    is_valid = 0;
+    }
+    
+    // printf("..cid=%s\n..cdata=%s\n..beacon=%s\n..domain=%s\n..client=%s\n..edns_client=%s\n..is_valid=%d\n..is_test=%d\n..domain_test=%s\n", cid,cdata,beacon,domain,s_client, s_edns_client, is_valid, is_test, CFG.domain_test);
 
     if (is_valid) {
-	pthread_mutex_lock(&DYN_BEACON_MUTEX); 
-	double network_time = current_time();
-	char edns_client[DMN_ANYSIN_MAXLEN+1];
-	struct in_addr client, client_subnet_addr;
-	client.s_addr = cinfo->dns_source.sin.sin_addr.s_addr; 
-	client_subnet_addr.s_addr = cinfo->edns_client.sin.sin_addr.s_addr;
-	if (client_subnet_addr.s_addr == 0)
-	    strcpy(edns_client, "-");
-	else {
-	    sprintf(edns_client, "%s/%d", inet_ntoa(client_subnet_addr), cinfo->edns_client_mask);
+	// Don't publish beacon telemetry if it was for the test domain
+	if (!is_test) {
+	    pthread_mutex_lock(&DYN_BEACON_MUTEX); 
+	    char* val = (char*)malloc(256);
+	    sprintf(val, "%f,D,%s,%s,%s,%s,%s,%s", network_time,CFG.id,s_client, beacon, cid, cdata, s_edns_client);
+	    PWord_t PV = NULL;
+	    ++CFG.event_count;
+	    JError_t J_Error;
+	    if (((PV) = (PWord_t)JudyLIns(&CFG.event_cache, CFG.event_count, &J_Error)) == PJERR) {
+		J_E("JudyLIns", &J_Error);
+	    } else {
+		*PV = (Word_t)val;
+	    }
+	    pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
 	}
-	
-	char* val = (char*)malloc(256);
-	sprintf(val, "%f,D,%s,%s,%s,%s,%s,%s", network_time,CFG.id,inet_ntoa(client), beacon, cid, cdata, edns_client);
-	PWord_t PV = NULL;
-	++CFG.event_count;
-	JError_t J_Error;
-	if (((PV) = (PWord_t)JudyLIns(&CFG.event_cache, CFG.event_count, &J_Error)) == PJERR) {
-	    J_E("JudyLIns", &J_Error);
-	} else {
-	    *PV = (Word_t)val;
-	}
-	pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
 	dmn_anysin_t tmpsin;
 	gdnsd_anysin_fromstr(CFG.ip, 0, &tmpsin);
 	gdnsd_result_add_anysin(result, &tmpsin); 
@@ -357,6 +401,6 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum V_UNUSED, const uint8_t* orig
 	gdnsd_result_add_anysin(result, &tmpsin);
     }
 
-    return GDNSD_STTL_TTL_MAX;
+    return 0; // GDNSD_STTL_TTL_MAX;
 }
 
