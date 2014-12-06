@@ -181,7 +181,7 @@ plugins_plugin_weighted_la_SOURCES    = plugins/weighted.c
 plugins_plugin_weighted_la_LDFLAGS    = -avoid-version -module
 plugins_plugin_extfile_la_SOURCES     = plugins/extfile.c
 plugins_plugin_extfile_la_LDFLAGS     = -avoid-version -module
-plugins_plugin_beacon_la_SOURCES     = plugins/beacon.c
+plugins_plugin_beacon_la_SOURCES     = plugins/beacon.c  plugins/hiredis.c plugins/hiredis.h
 plugins_plugin_beacon_la_LDFLAGS     = -avoid-version -module
 
 # extmon

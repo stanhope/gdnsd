@@ -1,8 +1,8 @@
-/* Copyright © 2012 Brandon L Black <blblack@gmail.com>
+/* Copyright © 2014 Phil Stanhope <stanhope@gmail.com>
  *
- * This file is part of gdnsd.
+ * This file is enhancement to gdnsd.
  *
- * gdnsd is free software: you can redistribute it and/or modify
+ * This is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
@@ -27,7 +27,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <Judy.h>
-#include "hiredis.c"
+#include "hiredis.h"
 
 static void redis_init(void);
 void* dyn_beacon_timer (void * args);
@@ -47,6 +47,7 @@ typedef struct {
     Pvoid_t event_cache;
     Word_t  event_total;
     Word_t  event_count;
+    uint8_t debug;
 } beacon_config;
 
 // Global CFG for this plugin
@@ -65,10 +66,10 @@ static void redis_init(void) {
     CFG.redis = redisConnectWithTimeout("127.0.0.1", 6379, timeout);
     if (CFG.redis == NULL || CFG.redis->err) {
 	if (CFG.redis) {
-	    printf("Connection error: %s\n", CFG.redis->errstr);
+	    log_debug("Connection error: %s\n", CFG.redis->errstr);
 	    redisFree(CFG.redis);
 	} else {
-	    printf("Connection error: can't allocate redis context\n");
+	    log_debug("Connection error: can't allocate redis context\n");
 	}
     }
 
@@ -266,6 +267,7 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
     CFG.event_cache = (Pvoid_t) NULL;
     CFG.event_total = 0;
     CFG.event_count = 0;
+    CFG.debug = 0;
     strcpy(CFG.event_channel, "beacon");
 
     unsigned residx = 0;
