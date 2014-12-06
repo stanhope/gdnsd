@@ -48,6 +48,7 @@ typedef struct {
     Word_t  event_total;
     Word_t  event_count;
     uint8_t debug;
+    uint8_t timer;
 } beacon_config;
 
 // Global CFG for this plugin
@@ -62,8 +63,7 @@ typedef struct S_PACKED {
 } wire_dns_header_t;
 
 static void redis_init(void) {
-    struct timeval timeout = { 1, 500000 }; // 1.5 seconds
-    CFG.redis = redisConnectWithTimeout("127.0.0.1", 6379, timeout);
+    CFG.redis = redisConnect("127.0.0.1", 6379);
     if (CFG.redis == NULL || CFG.redis->err) {
 	if (CFG.redis) {
 	    log_debug("Connection error: %s\n", CFG.redis->errstr);
@@ -72,8 +72,9 @@ static void redis_init(void) {
 	} else {
 	    log_debug("Connection error: can't allocate redis context\n");
 	}
+    } else {
+	redisEnableKeepAlive(CFG.redis);
     }
-
 }
 
 static double current_time(void) {
@@ -96,59 +97,63 @@ void* dyn_beacon_timer (void * args V_UNUSED) {
 	
 	if (delta > 0) {
 
-	  // Emit 32K msg at a time
-	  char buffer[32*1024];
-	  uint bufi = 0;
-		
-	  // Dump cached events and publish them
-	  Word_t cache_count = 0;
-	  PWord_t PV = NULL;
-	
-	  sprintf(buffer, "PUBLISH %s ", CFG.event_channel);
-	  bufi = strlen(buffer);
-	  buffer[bufi] = 0;
+	    if (CFG.redis == NULL) {
+	        redis_init();
+	    }
 
-	  Word_t Index;
-	  JError_t J_Error;
-	  if (((PV) = (PWord_t)JudyLFirst(CFG.event_cache, &Index, &J_Error)) == PJERR) J_E("JudyLFirst", &J_Error);
+	    // Emit 32K msg at a time
+	    char buffer[32*1024];
+	    uint bufi = 0;
+		
+	    // Dump cached events and publish them
+	    Word_t cache_count = 0;
+	    PWord_t PV = NULL;
+	
+	    sprintf(buffer, "PUBLISH %s ", CFG.event_channel);
+	    bufi = strlen(buffer);
+	    buffer[bufi] = 0;
+
+	    Word_t Index;
+	    JError_t J_Error;
+	    if (((PV) = (PWord_t)JudyLFirst(CFG.event_cache, &Index, &J_Error)) == PJERR) J_E("JudyLFirst", &J_Error);
 	    
-	  while (PV != NULL) {
-	    ++cache_count;
-	    char* val = (char*)*PV;
-	    uint len = strlen(val);
-	    // fprintf(stderr, "  cached key: %lu val: %s\n", Index, val);
-	    if (bufi + len > sizeof(buffer)) {
-	      // fprintf(stderr, "%s\n", buffer);
-	      if (CFG.redis != NULL) {
+	    while (PV != NULL) {
+		++cache_count;
+		char* val = (char*)*PV;
+		uint len = strlen(val);
+		// fprintf(stderr, "  cached key: %lu val: %s\n", Index, val);
+		if (bufi + len > sizeof(buffer)) {
+		    // fprintf(stderr, "%s\n", buffer);
+		    if (CFG.redis != NULL) {
+			redisReply *reply = (redisReply*)redisCommand(CFG.redis, buffer);
+			freeReplyObject(reply);
+		    }
+		    sprintf(buffer, "PUBLISH %s ", CFG.event_channel);
+		    bufi = strlen(buffer);
+		    buffer[bufi] = 0;
+		} 
+
+		// Cache the value
+		if (bufi > 30) {
+		    buffer[bufi++] = '|';
+		}
+		memcpy(buffer+bufi, (void*)*PV, len);
+		bufi += len;
+		buffer[bufi] = 0;
+		free((void*)val);
+		if (((PV) = (PWord_t)JudyLNext(CFG.event_cache, &Index, &J_Error)) == PJERR) J_E("JudyLNext", &J_Error);
+	    }
+	
+	    // Cleanup
+	    Word_t index_size = JudyLFreeArray(&CFG.event_cache, ((PJError_t) NULL)); 
+	    (void)index_size;
+	    // log_debug("index used %lu bytes of memory, expected=%lu found=%lu total=%lu", index_size, delta, cache_count, CFG.event_total);
+		
+	    // fprintf(stderr, "%s\n", buffer);
+	    if (CFG.redis != NULL) {
 		redisReply *reply = (redisReply*)redisCommand(CFG.redis, buffer);
 		freeReplyObject(reply);
-	      }
-	      sprintf(buffer, "PUBLISH %s ", CFG.event_channel);
-	      bufi = strlen(buffer);
-	      buffer[bufi] = 0;
-	    } 
-
-	    // Cache the value
-	    if (bufi > 30) {
-	      buffer[bufi++] = '|';
 	    }
-	    memcpy(buffer+bufi, (void*)*PV, len);
-	    bufi += len;
-	    buffer[bufi] = 0;
-	    free((void*)val);
-	    if (((PV) = (PWord_t)JudyLNext(CFG.event_cache, &Index, &J_Error)) == PJERR) J_E("JudyLNext", &J_Error);
-	  }
-	
-	  // Cleanup
-	  Word_t index_size = JudyLFreeArray(&CFG.event_cache, ((PJError_t) NULL)); 
-	  (void)index_size;
-	  // log_debug("index used %lu bytes of memory, expected=%lu found=%lu total=%lu", index_size, delta, cache_count, CFG.event_total);
-		
-	  // fprintf(stderr, "%s\n", buffer);
-	  if (CFG.redis != NULL) {
-	    redisReply *reply = (redisReply*)redisCommand(CFG.redis, buffer);
-	    freeReplyObject(reply);
-	  }
 	}
 	pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
     }
@@ -269,6 +274,7 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
     CFG.event_total = 0;
     CFG.event_count = 0;
     CFG.debug = 0;
+    CFG.timer = 0;
     strcpy(CFG.event_channel, "beacon");
 
     unsigned residx = 0;
@@ -304,10 +310,6 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
 		  CFG.blackhole_as_refused ? "true":"false");
     }
 
-    redis_init();
-    // Create timer thread
-    pthread_t thread;
-    pthread_create (&thread, NULL, &dyn_beacon_timer, NULL);
 }
 
 
@@ -315,7 +317,16 @@ int plugin_beacon_map_res(const char* resname V_UNUSED, const uint8_t* origin V_
     return 0;
 }
 
+pthread_t DNS_TELEMETRY_THREAD;
+
 gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum V_UNUSED, const uint8_t* origin V_UNUSED, const client_info_t* cinfo, dyn_result_t* result) {
+
+    // Deferred until iothread init (after potential daemonization)
+    if (CFG.timer == 0) {
+	pthread_create (&DNS_TELEMETRY_THREAD, NULL, &dyn_beacon_timer, NULL);
+	log_info("plugin_beacon: background_timer initialized");
+	CFG.timer = 1;
+    }
 
     // printf("plugin_beacon_resolve\n");
 
