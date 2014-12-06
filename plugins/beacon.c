@@ -68,6 +68,7 @@ static void redis_init(void) {
 	if (CFG.redis) {
 	    log_debug("Connection error: %s\n", CFG.redis->errstr);
 	    redisFree(CFG.redis);
+	    CFG.redis = NULL;
 	} else {
 	    log_debug("Connection error: can't allocate redis context\n");
 	}
@@ -88,66 +89,66 @@ void* dyn_beacon_timer (void * args V_UNUSED) {
 	sleep (1);
 
 	pthread_mutex_lock(&DYN_BEACON_MUTEX);  // lock the critical section
-	if (CFG.redis != NULL) {
-	    Word_t delta = CFG.event_count - CFG.event_total;
-	    CFG.event_total = CFG.event_count;
+	Word_t delta = CFG.event_count - CFG.event_total;
+	CFG.event_total = CFG.event_count;
 
-	    log_debug("%f beacon new=%u tot=%u", current_time(), (unsigned int)delta, (unsigned int)CFG.event_total);
-
-	    if (delta > 0) {
-
-		// Emit 32K msg at a time
-		char buffer[32*1024];
-		uint bufi = 0;
-		
-		// Dump cached events and publish them
-		Word_t cache_count = 0;
-		PWord_t PV = NULL;
+	log_debug("%f beacon new=%u tot=%u", current_time(), (unsigned int)delta, (unsigned int)CFG.event_total);
 	
-		sprintf(buffer, "PUBLISH %s ", CFG.event_channel);
-		bufi = strlen(buffer);
-		buffer[bufi] = 0;
+	if (delta > 0) {
 
-		Word_t Index;
-		JError_t J_Error;
-		if (((PV) = (PWord_t)JudyLFirst(CFG.event_cache, &Index, &J_Error)) == PJERR) J_E("JudyLFirst", &J_Error);
+	  // Emit 32K msg at a time
+	  char buffer[32*1024];
+	  uint bufi = 0;
+		
+	  // Dump cached events and publish them
+	  Word_t cache_count = 0;
+	  PWord_t PV = NULL;
+	
+	  sprintf(buffer, "PUBLISH %s ", CFG.event_channel);
+	  bufi = strlen(buffer);
+	  buffer[bufi] = 0;
+
+	  Word_t Index;
+	  JError_t J_Error;
+	  if (((PV) = (PWord_t)JudyLFirst(CFG.event_cache, &Index, &J_Error)) == PJERR) J_E("JudyLFirst", &J_Error);
 	    
-		while (PV != NULL) {
-		    ++cache_count;
-		    char* val = (char*)*PV;
-		    uint len = strlen(val);
-		    // fprintf(stderr, "  cached key: %lu val: %s\n", Index, val);
-		    if (bufi + len > sizeof(buffer)) {
-			// fprintf(stderr, "%s\n", buffer);
-			redisReply *reply = (redisReply*)redisCommand(CFG.redis, buffer);
-			freeReplyObject(reply);
-			sprintf(buffer, "PUBLISH %s ", CFG.event_channel);
-			bufi = strlen(buffer);
-			buffer[bufi] = 0;
-		    } 
-
-		    // Cache the value
-		    if (bufi > 30) {
-			buffer[bufi++] = '|';
-		    }
-		    memcpy(buffer+bufi, (void*)*PV, len);
-		    bufi += len;
-		    buffer[bufi] = 0;
-		    free((void*)val);
-		    if (((PV) = (PWord_t)JudyLNext(CFG.event_cache, &Index, &J_Error)) == PJERR) J_E("JudyLNext", &J_Error);
-		}
-	
-		// Cleanup
-		Word_t index_size = JudyLFreeArray(&CFG.event_cache, ((PJError_t) NULL)); 
-		(void)index_size;
-		// log_debug("index used %lu bytes of memory, expected=%lu found=%lu total=%lu", index_size, delta, cache_count, CFG.event_total);
-		
-		// fprintf(stderr, "%s\n", buffer);
+	  while (PV != NULL) {
+	    ++cache_count;
+	    char* val = (char*)*PV;
+	    uint len = strlen(val);
+	    // fprintf(stderr, "  cached key: %lu val: %s\n", Index, val);
+	    if (bufi + len > sizeof(buffer)) {
+	      // fprintf(stderr, "%s\n", buffer);
+	      if (CFG.redis != NULL) {
 		redisReply *reply = (redisReply*)redisCommand(CFG.redis, buffer);
 		freeReplyObject(reply);
+	      }
+	      sprintf(buffer, "PUBLISH %s ", CFG.event_channel);
+	      bufi = strlen(buffer);
+	      buffer[bufi] = 0;
+	    } 
+
+	    // Cache the value
+	    if (bufi > 30) {
+	      buffer[bufi++] = '|';
 	    }
-	} else {
-	    printf("TODO: HEARTBEAT re-establish REDIS channel\n");
+	    memcpy(buffer+bufi, (void*)*PV, len);
+	    bufi += len;
+	    buffer[bufi] = 0;
+	    free((void*)val);
+	    if (((PV) = (PWord_t)JudyLNext(CFG.event_cache, &Index, &J_Error)) == PJERR) J_E("JudyLNext", &J_Error);
+	  }
+	
+	  // Cleanup
+	  Word_t index_size = JudyLFreeArray(&CFG.event_cache, ((PJError_t) NULL)); 
+	  (void)index_size;
+	  // log_debug("index used %lu bytes of memory, expected=%lu found=%lu total=%lu", index_size, delta, cache_count, CFG.event_total);
+		
+	  // fprintf(stderr, "%s\n", buffer);
+	  if (CFG.redis != NULL) {
+	    redisReply *reply = (redisReply*)redisCommand(CFG.redis, buffer);
+	    freeReplyObject(reply);
+	  }
 	}
 	pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
     }

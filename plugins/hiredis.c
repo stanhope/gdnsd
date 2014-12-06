@@ -1009,8 +1009,7 @@ void __redisSetError(redisContext *c, int type, const char *str) {
     } else {
         /* Only REDIS_ERR_IO may lack a description! */
         assert(type == REDIS_ERR_IO);
-        char* IGNORE = strerror_r(errno,c->errstr,sizeof(c->errstr));
-	(void)IGNORE;
+	(void)strerror_r(errno,c->errstr,sizeof(c->errstr));
     }
 }
 
@@ -1454,8 +1453,7 @@ static void __redisSetErrorFromErrno(redisContext *c, int type, const char *pref
 
     if (prefix != NULL)
       len = (size_t)snprintf(buf,sizeof(buf),"%s: ",prefix);
-    char* IGNORE = strerror_r(errno,buf+len,sizeof(buf)-len);
-    (void)IGNORE;
+    (void)strerror_r(errno,buf+len,sizeof(buf)-len);
     __redisSetError(c,type,buf);
 }
 
@@ -1851,7 +1849,7 @@ sds sdsdup(const sds s) {
 }
 
 /* Free an sds string. No operation is performed if 's' is NULL. */
-void sdsfree(sds s) {
+static inline void sdsfree(sds s) {
     if (s == NULL) return;
     free(s-sizeof(struct sdshdr));
 }
