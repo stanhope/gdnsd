@@ -312,15 +312,43 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
 
 }
 
+int RESCNT = 0;
+Pvoid_t RES_CACHE = (PWord_t)NULL;
+Pvoid_t RES_REVERSE_CACHE = NULL;
 
-int plugin_beacon_map_res(const char* resname V_UNUSED, const uint8_t* origin V_UNUSED) {
-    return 0;
+int plugin_beacon_map_res(const char* resname, const uint8_t* origin V_UNUSED) {
+    if (resname == NULL) return 0;
+    printf("map_res resname=%s\n", resname);
+    RESCNT++;
+    PWord_t PV = NULL;
+
+    char* val = (char*)malloc(strlen(resname)+1);
+    strcpy(val, resname);
+    JSLG(PV, RES_CACHE, (const uint8_t*)resname);
+    if (PV == NULL) {
+	JSLI(PV, RES_CACHE, (const uint8_t*)resname);
+	*PV = (Word_t)RESCNT;
+	PWord_t PV2 = NULL;
+	JLI(PV2, RES_REVERSE_CACHE, (Word_t)RESCNT);
+	*PV2 = (Word_t)val;
+	printf("mapped '%s' %p => %d\n", val, PV2, RESCNT);
+	return RESCNT;
+    } else {
+	printf("lookup '%s' => %lu\n", val, *PV);
+	return *PV;
+    }
+
 }
 
 pthread_t DNS_TELEMETRY_THREAD;
 
-gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum V_UNUSED, const uint8_t* origin V_UNUSED, const client_info_t* cinfo, dyn_result_t* result) {
+gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUSED, const client_info_t* cinfo, dyn_result_t* result) {
 
+
+    PWord_t PV = NULL;
+    JLG(PV, RES_REVERSE_CACHE, resnum);
+    char* result_ip = PV == NULL ? CFG.ip : (char*)*PV;
+    printf("resolve resnum=%u => %s\n", resnum, result_ip);
     // Deferred until iothread init (after potential daemonization)
     if (CFG.timer == 0) {
 	pthread_create (&DNS_TELEMETRY_THREAD, NULL, &dyn_beacon_timer, NULL);
@@ -384,7 +412,7 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum V_UNUSED, const uint8_t* orig
 	    is_valid = 0;
     }
     
-    // printf("..cid=%s\n..cdata=%s\n..beacon=%s\n..domain=%s\n..client=%s\n..edns_client=%s\n..is_valid=%d\n..is_test=%d\n..domain_test=%s\n", cid,cdata,beacon,domain,s_client, s_edns_client, is_valid, is_test, CFG.domain_test);
+    // printf("..resnum=%u\ncid=%s\n..cdata=%s\n..beacon=%s\n..domain=%s\n..client=%s\n..edns_client=%s\n..is_valid=%d\n..is_test=%d\n..domain_test=%s\n", resnum,cid,cdata,beacon,domain,s_client, s_edns_client, is_valid, is_test, CFG.domain_test);
 
     if (is_valid) {
 	// Don't publish beacon telemetry if it was for the test domain
@@ -392,7 +420,6 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum V_UNUSED, const uint8_t* orig
 	    pthread_mutex_lock(&DYN_BEACON_MUTEX); 
 	    char* val = (char*)malloc(256);
 	    sprintf(val, "%f,D,%s,%s,%s,%s,%s,%s", network_time,CFG.id,s_client, beacon, cid, cdata, s_edns_client);
-	    PWord_t PV = NULL;
 	    ++CFG.event_count;
 	    JError_t J_Error;
 	    if (((PV) = (PWord_t)JudyLIns(&CFG.event_cache, CFG.event_count, &J_Error)) == PJERR) {
@@ -403,7 +430,7 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum V_UNUSED, const uint8_t* orig
 	    pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
 	}
 	dmn_anysin_t tmpsin;
-	gdnsd_anysin_fromstr(CFG.ip, 0, &tmpsin);
+	gdnsd_anysin_fromstr(result_ip, 0, &tmpsin);
 	gdnsd_result_add_anysin(result, &tmpsin); 
    } else if (CFG.blackhole_as_refused) {
 	// REFUSED. Possibly not very kosher. But sort of equivalent of simply dropping the request.
