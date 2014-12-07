@@ -26,6 +26,7 @@
 #define DYN_BEACON
 #include <time.h>
 #include <sys/time.h>
+#include <ctype.h>
 #include <Judy.h>
 #include "hiredis.h"
 
@@ -49,6 +50,7 @@ typedef struct {
     Word_t  event_count;
     uint8_t debug;
     uint8_t timer;
+    uint8_t relay;
 } beacon_config;
 
 // Global CFG for this plugin
@@ -253,12 +255,256 @@ static bool config_res(const char* resname, unsigned resname_len V_UNUSED, vscf_
 	    if (strcmp(val, "true") == 0)
 		CFG.blackhole_as_refused = 1;
 	}
+    } else if (strcmp(resname, "relay") == 0) {
+	if (vscf_get_type(addr) != VSCF_SIMPLE_T)
+	    log_fatal("plugin_beacon: resource %s: must be 'true' or 'false'", resname);
+	else {
+	    const char* val = vscf_simple_get_data(addr);
+	    if (strcmp(val, "true") == 0)
+		CFG.relay = 1;
+	}
     }
     return 1;
 }
 
 // -- END DYN BEACON IMPL ------------------------------------
 
+// -- BEG SIMPLE INLINE DNS RE(QUERY) IMPL ------------------------------------
+
+#define T_A 1 //Ipv4 address
+#define T_NS 2 //Nameserver
+#define T_CNAME 5 // canonical name
+#define T_SOA 6 /* start of authority zone */
+#define T_PTR 12 /* domain name pointer */
+#define T_MX 15 //Mail server
+ 
+//Function Prototypes
+void ngethostbyname (char*, uint8_t, const char*, unsigned char* , int);
+void EncodeQname (unsigned char*,unsigned char*);
+ 
+//DNS header structure
+struct DNS_HEADER
+{
+    unsigned short id; // identification number
+ 
+    unsigned char rd :1; // recursion desired
+    unsigned char tc :1; // truncated message
+    unsigned char aa :1; // authoritive answer
+    unsigned char opcode :4; // purpose of message
+    unsigned char qr :1; // query/response flag
+ 
+    unsigned char rcode :4; // response code
+    unsigned char cd :1; // checking disabled
+    unsigned char ad :1; // authenticated data
+    unsigned char z :1; // its z! reserved
+    unsigned char ra :1; // recursion available
+ 
+    unsigned short q_count; // number of question entries
+    unsigned short ans_count; // number of answer entries
+    unsigned short auth_count; // number of authority entries
+    unsigned short add_count; // number of resource entries
+};
+ 
+//Constant sized fields of query structure
+struct QUESTION
+{
+    unsigned short qtype;
+    unsigned short qclass;
+};
+ 
+//Constant sized fields of the resource record structure
+#pragma pack(push, 1)
+struct R_DATA
+{
+    unsigned short type;
+    unsigned short _class;
+    unsigned int ttl;
+    unsigned short data_len;
+};
+#pragma pack(pop)
+ 
+//Pointers to resource record contents
+struct RES_RECORD
+{
+    unsigned char *name;
+    struct R_DATA *resource;
+    unsigned char *rdata;
+};
+ 
+//Structure of a Query
+typedef struct
+{
+    unsigned char *name;
+    struct QUESTION *ques;
+} QUERY;
+ 
+void EncodeQname(unsigned char* dns, unsigned char* host) 
+{
+    unsigned int lock = 0 , i;
+    strcat((char*)host,".");
+     
+    for(i = 0 ; i < strlen((char*)host) ; i++) {
+	if(host[i]=='.') 
+	    {
+		*dns++ = i-lock;
+		for(;lock<i;lock++) 
+		    {
+			*dns++=host[lock];
+		    }
+		lock++; //or lock=i+1;
+	    }
+    }
+    *dns++='\0';
+}
+
+#define ASCII_LINELENGTH 300
+#define HEXDUMP_BYTES_PER_LINE 16
+#define HEXDUMP_SHORTS_PER_LINE (HEXDUMP_BYTES_PER_LINE / 2)
+#define HEXDUMP_HEXSTUFF_PER_SHORT 5 /* 4 hex digits and a space */
+#define HEXDUMP_HEXSTUFF_PER_LINE  (HEXDUMP_HEXSTUFF_PER_SHORT * HEXDUMP_SHORTS_PER_LINE)
+
+void hex_and_ascii_print(register const char *ident, register const u_char *cp, register u_int length);
+void hex_and_ascii_print_with_offset(register const char *ident, register const u_char *cp, register u_int length, register u_int oset);
+
+void
+hex_and_ascii_print_with_offset(register const char *ident, register const u_char *cp, register u_int length, register u_int oset)
+{
+  register u_int i;
+  register int s1, s2;
+  register int nshorts;
+  char hexstuff[HEXDUMP_SHORTS_PER_LINE*HEXDUMP_HEXSTUFF_PER_SHORT+1], *hsp;
+  char asciistuff[ASCII_LINELENGTH+1], *asp;
+
+  nshorts = (int)(length / sizeof(u_short));
+  i = 0;
+  hsp = hexstuff; asp = asciistuff;
+  while (--nshorts >= 0) {
+    s1 = *cp++;
+    s2 = *cp++;
+    (void)snprintf(hsp, sizeof(hexstuff) - (long unsigned int)(hsp - hexstuff),
+		   " %02x%02x", s1, s2);
+    hsp += HEXDUMP_HEXSTUFF_PER_SHORT;
+    *(asp++) = (isgraph(s1) ? s1 : '.');
+    *(asp++) = (isgraph(s2) ? s2 : '.');
+    i++;
+    if (i >= HEXDUMP_SHORTS_PER_LINE) {
+      *hsp = *asp = '\0';
+      (void)printf("%s0x%04x: %-*s  %s",
+		   ident, oset, HEXDUMP_HEXSTUFF_PER_LINE,
+		   hexstuff, asciistuff);
+      i = 0; hsp = hexstuff; asp = asciistuff;
+      oset += HEXDUMP_BYTES_PER_LINE;
+    }
+  }
+  if (length & 1) {
+    s1 = *cp++;
+    (void)snprintf(hsp, sizeof(hexstuff) - (long unsigned int)(hsp - hexstuff),
+		   " %02x", s1);
+    hsp += 3;
+    *(asp++) = (isgraph(s1) ? s1 : '.');
+    ++i;
+  }
+  if (i > 0) {
+    *hsp = *asp = '\0';
+    (void)printf("%s0x%04x: %-*s  %s",
+		 ident, oset, HEXDUMP_HEXSTUFF_PER_LINE,
+		 hexstuff, asciistuff);
+  }
+}
+
+void hex_and_ascii_print(register const char *ident, register const u_char *cp, register u_int length)
+{
+  hex_and_ascii_print_with_offset(ident, cp, length, 0);
+  fflush(stderr);
+}
+
+/*
+ * Perform a DNS query by sending a UDP packet. 
+ */
+void ngethostbyname(char* client, uint8_t mask, const char *target, unsigned char *host , int query_type)
+{
+    printf("ngethostbyname %s client=%s mask=%u target=%s\n", host, client, mask, target);
+
+    unsigned char buf[65536],*qname;
+    int i, s;
+ 
+    struct DNS_HEADER *dns = NULL;
+    struct QUESTION *qinfo = NULL;
+ 
+    dns = (struct DNS_HEADER *)&buf;
+    dns->id = (unsigned short) htons(getpid());
+    dns->qr = 0; 
+    dns->opcode = 0;
+    dns->aa = 0;
+    dns->tc = 0;
+    dns->rd = 0;
+    dns->ra = 0;
+    dns->z = 0;
+    dns->ad = 0;
+    dns->cd = 0;
+    dns->rcode = 0;
+    dns->q_count = htons(1);
+    dns->ans_count = 0;
+    dns->auth_count = 0;
+    dns->add_count = 1;
+ 
+    qname =(unsigned char*)&buf[sizeof(struct DNS_HEADER)];
+    EncodeQname(qname, host);
+    qinfo =(struct QUESTION*)&buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1)];
+    qinfo->qtype = htons( query_type );
+    qinfo->qclass = htons(1);
+ 
+    // TODO: ADD EDNS CLIENT
+
+    unsigned int packet_len = sizeof(struct DNS_HEADER) + (strlen((const char*)qname)+1) + sizeof(struct QUESTION);
+
+    printf("Sending %f data=%p len=%d client=%s mask=%u", current_time(), buf, packet_len, client, mask);
+
+    hex_and_ascii_print("\r\n", buf, packet_len);
+    printf("\n");
+
+    struct sockaddr_in edns;
+    memset(&edns,0,sizeof edns);  
+    char str_client[40];
+    strcpy(str_client, client);
+    edns.sin_family = AF_INET;
+    inet_aton(str_client, &edns.sin_addr);
+
+    const char* edns_info = "\x00\x00\x29\x10\x00\x00\x00\x80\x00\x00\x0b\x00\x08\x00\x07\x00\x01";
+    memcpy(buf+packet_len, edns_info, 17);
+
+    uint8_t edns_len = 22;
+    // encode the client mask
+    buf[packet_len+17] = mask;
+    buf[packet_len+18] = 0;
+
+    // encode the client address, could be a compressed address. Only handlng /24 and /32 properly
+    buf[packet_len+19] = edns.sin_addr.s_addr & 0xFF; /* 0x18 */
+    buf[packet_len+20] = (edns.sin_addr.s_addr & 0xFF00)>>8; /*0x3e;*/
+    buf[packet_len+21] = (edns.sin_addr.s_addr & 0xFF0000)>>16; /*0xb9;*/
+    if (mask == 32) {
+	buf[packet_len+22] = (edns.sin_addr.s_addr & 0xFF000000)>>24; 
+	edns_len++;
+    }
+    
+    hex_and_ascii_print("\r\n", buf, packet_len+edns_len);
+    printf("\n");
+
+    struct sockaddr_in dest;
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(53);
+    dest.sin_addr.s_addr = inet_addr(target);
+    s = socket(AF_INET , SOCK_DGRAM , IPPROTO_UDP); //UDP packet for DNS queries
+ 
+    if (sendto(s,(char*)buf,packet_len+edns_len,0,(struct sockaddr*)&dest,sizeof(dest)) >= 0) {
+	//Receive the answer. We really don't care what it is. 
+	recvfrom (s,(char*)buf , 65536 , 0 , (struct sockaddr*)&dest , (socklen_t*)&i);
+    } else {
+	printf("Error sending proxy'd DNS request\n");
+    }
+
+}
+ 
 void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V_UNUSED) {
     gdnsd_dyn_addr_max(1, 1); // only ever returns a single IP from each family
 
@@ -275,6 +521,7 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
     CFG.event_count = 0;
     CFG.debug = 0;
     CFG.timer = 0;
+    CFG.relay = 0;
     strcpy(CFG.event_channel, "beacon");
 
     unsigned residx = 0;
@@ -318,23 +565,22 @@ Pvoid_t RES_REVERSE_CACHE = NULL;
 
 int plugin_beacon_map_res(const char* resname, const uint8_t* origin V_UNUSED) {
     if (resname == NULL) return 0;
-    printf("map_res resname=%s\n", resname);
     RESCNT++;
     PWord_t PV = NULL;
 
-    char* val = (char*)malloc(strlen(resname)+1);
-    strcpy(val, resname);
     JSLG(PV, RES_CACHE, (const uint8_t*)resname);
     if (PV == NULL) {
 	JSLI(PV, RES_CACHE, (const uint8_t*)resname);
 	*PV = (Word_t)RESCNT;
 	PWord_t PV2 = NULL;
 	JLI(PV2, RES_REVERSE_CACHE, (Word_t)RESCNT);
+	char* val = (char*)malloc(strlen(resname)+1);
+	strcpy(val, resname);
 	*PV2 = (Word_t)val;
-	printf("mapped '%s' %p => %d\n", val, PV2, RESCNT);
+	printf("map_res resname=%s => %d\n", resname, RESCNT);
+	
 	return RESCNT;
     } else {
-	printf("lookup '%s' => %lu\n", val, *PV);
 	return *PV;
     }
 
@@ -344,11 +590,25 @@ pthread_t DNS_TELEMETRY_THREAD;
 
 gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUSED, const client_info_t* cinfo, dyn_result_t* result) {
 
-
     PWord_t PV = NULL;
     JLG(PV, RES_REVERSE_CACHE, resnum);
-    char* result_ip = PV == NULL ? CFG.ip : (char*)*PV;
-    printf("resolve resnum=%u => %s\n", resnum, result_ip);
+    char* result_ip = CFG.ip;
+    uint8_t is_override = 0;
+    uint8_t is_proxy = 0;
+    // Determine if we've got an zone level answer for this resolution
+    // beacon!IPV4 => give up the IPV4
+    // beacon!proxy_IPV4 => give up the IPV4 and 
+    if (PV != NULL) {
+	result_ip =(char*)*PV;
+	const char* proxy = "proxy_";
+	char* res = strstr(proxy, result_ip);
+	if (res == NULL) {
+	    is_proxy = 1;
+	    result_ip += 6;
+	}
+	is_override = 1;
+    }
+
     // Deferred until iothread init (after potential daemonization)
     if (CFG.timer == 0) {
 	pthread_create (&DNS_TELEMETRY_THREAD, NULL, &dyn_beacon_timer, NULL);
@@ -364,8 +624,6 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
     const u_char* qdata = cinfo->qname+1;
     u_char* qname = convert_qname(qdata);
 
-    // printf("..qname=%s\n", qname);
-
     char temp[1024];
     strcpy(temp, (char*)qname);
     char* saveptr, *domain;
@@ -376,13 +634,27 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 
     struct in_addr client, client_subnet_addr;
     client.s_addr = cinfo->dns_source.sin.sin_addr.s_addr; 
-    const char* s_client = inet_ntoa(client);
+    char* s_client = inet_ntoa(client);
+    char str_client[DMN_ANYSIN_MAXLEN+1];
+    strcpy(str_client, s_client);
+
+
+    char* proxy_client = str_client;
     char s_edns_client[DMN_ANYSIN_MAXLEN+1];
     client_subnet_addr.s_addr = cinfo->edns_client.sin.sin_addr.s_addr;
+    char* s_edns = inet_ntoa(client_subnet_addr);
+    uint8_t mask = 32;
+
+    printf("s_client=%s\n", str_client);
+    printf("s_edns=%s\n", s_edns);
+
     if (client_subnet_addr.s_addr == 0)
 	strcpy(s_edns_client, "-");
     else {
-	sprintf(s_edns_client, "%s/%d", s_client, cinfo->edns_client_mask);
+	sprintf(s_edns_client, "%s/%d", s_edns, cinfo->edns_client_mask);
+	mask = cinfo->edns_client_mask;
+	// proxy_client = s_edns_client;
+	proxy_client = s_edns;
     }
 	
     if (cid == NULL || cdata == NULL || beacon == NULL) {
@@ -397,6 +669,8 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	    }
 	}
     }
+
+    printf("resolve %s resnum=%d => %s %s %s proxy=%s client=%s edns=%s\n", qname, resnum, result_ip, is_override?"(override)":"", is_proxy?"(proxy)":"", proxy_client, str_client, s_edns_client);
 
     if (!is_test) {
 	// cid can only be 4 characters
@@ -419,7 +693,7 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	if (!is_test) {
 	    pthread_mutex_lock(&DYN_BEACON_MUTEX); 
 	    char* val = (char*)malloc(256);
-	    sprintf(val, "%f,D,%s,%s,%s,%s,%s,%s", network_time,CFG.id,s_client, beacon, cid, cdata, s_edns_client);
+	    sprintf(val, "%f,D,%s,%s,%s,%s,%s,%s", network_time,CFG.id,str_client, beacon, cid, cdata, s_edns_client);
 	    ++CFG.event_count;
 	    JError_t J_Error;
 	    if (((PV) = (PWord_t)JudyLIns(&CFG.event_cache, CFG.event_count, &J_Error)) == PJERR) {
@@ -432,6 +706,17 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	dmn_anysin_t tmpsin;
 	gdnsd_anysin_fromstr(result_ip, 0, &tmpsin);
 	gdnsd_result_add_anysin(result, &tmpsin); 
+
+	if (is_proxy) {
+	    if (CFG.relay) {
+		// ngethostbyname(str_client, 32, result_ip, qname, T_A);
+		ngethostbyname(proxy_client, mask, result_ip, qname, T_A);
+	    } else {
+		printf("  NOT RELAYING to %s\n", proxy_client);
+	    }
+	}
+
+
    } else if (CFG.blackhole_as_refused) {
 	// REFUSED. Possibly not very kosher. But sort of equivalent of simply dropping the request.
 	((wire_dns_header_t*)cinfo->res_hdr)->flags2 = DNS_RCODE_REFUSED;
