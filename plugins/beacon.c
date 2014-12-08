@@ -423,7 +423,7 @@ void hex_and_ascii_print(register const char *ident, register const u_char *cp, 
  */
 void ngethostbyname(char* client, uint8_t mask, const char *target, unsigned char *host , int query_type)
 {
-    printf("ngethostbyname %s client=%s mask=%u target=%s\n", host, client, mask, target);
+    // printf("ngethostbyname %s client=%s mask=%u target=%s\n", host, client, mask, target);
 
     unsigned char buf[65536],*qname;
     int i, s;
@@ -458,11 +458,17 @@ void ngethostbyname(char* client, uint8_t mask, const char *target, unsigned cha
 
     unsigned int packet_len = sizeof(struct DNS_HEADER) + (strlen((const char*)qname)+1) + sizeof(struct QUESTION);
 
+    /*
     printf("Sending %f data=%p len=%d client=%s mask=%u", current_time(), buf, packet_len, client, mask);
-
     hex_and_ascii_print("\r\n", buf, packet_len);
     printf("\n");
+    */
 
+    uint8_t edns_len = 0;
+
+    /*
+    // Add quick & dirty EDNS0 client subnet for the relay of the request
+    edns_len = 22;
     struct sockaddr_in edns;
     memset(&edns,0,sizeof edns);  
     char str_client[40];
@@ -473,15 +479,14 @@ void ngethostbyname(char* client, uint8_t mask, const char *target, unsigned cha
     const char* edns_info = "\x00\x00\x29\x10\x00\x00\x00\x80\x00\x00\x0b\x00\x08\x00\x07\x00\x01";
     memcpy(buf+packet_len, edns_info, 17);
 
-    uint8_t edns_len = 22;
     // encode the client mask
     buf[packet_len+17] = mask;
     buf[packet_len+18] = 0;
 
     // encode the client address, could be a compressed address. Only handlng /24 and /32 properly
-    buf[packet_len+19] = edns.sin_addr.s_addr & 0xFF; /* 0x18 */
-    buf[packet_len+20] = (edns.sin_addr.s_addr & 0xFF00)>>8; /*0x3e;*/
-    buf[packet_len+21] = (edns.sin_addr.s_addr & 0xFF0000)>>16; /*0xb9;*/
+    buf[packet_len+19] = edns.sin_addr.s_addr & 0xFF;
+    buf[packet_len+20] = (edns.sin_addr.s_addr & 0xFF00)>>8;
+    buf[packet_len+21] = (edns.sin_addr.s_addr & 0xFF0000)>>16; 
     if (mask == 32) {
 	buf[packet_len+22] = (edns.sin_addr.s_addr & 0xFF000000)>>24; 
 	edns_len++;
@@ -489,6 +494,7 @@ void ngethostbyname(char* client, uint8_t mask, const char *target, unsigned cha
     
     hex_and_ascii_print("\r\n", buf, packet_len+edns_len);
     printf("\n");
+    */    
 
     struct sockaddr_in dest;
     dest.sin_family = AF_INET;
@@ -552,9 +558,9 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
 	printf("ERROR: Plugin not configured properly\n");
 	exit(1);
     } else {
-	log_debug("plugin_beacon: config id=%s ip=%s domain=%s domain_test=%s blackhole=%s blackhole_as_refused=%s",
+	log_debug("plugin_beacon: config id=%s ip=%s domain=%s domain_test=%s blackhole=%s blackhole_as_refused=%s relay=%s",
 		  CFG.id, CFG.ip, CFG.domain, CFG.domain_test, CFG.blackhole_ip, 
-		  CFG.blackhole_as_refused ? "true":"false");
+		  CFG.blackhole_as_refused ? "true":"false", CFG.relay?"true":"false");
     }
 
 }
@@ -645,8 +651,8 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
     char* s_edns = inet_ntoa(client_subnet_addr);
     uint8_t mask = 32;
 
-    printf("s_client=%s\n", str_client);
-    printf("s_edns=%s\n", s_edns);
+    // printf("s_client=%s\n", str_client);
+    // printf("s_edns=%s\n", s_edns);
 
     if (client_subnet_addr.s_addr == 0)
 	strcpy(s_edns_client, "-");
@@ -670,7 +676,7 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	}
     }
 
-    printf("resolve %s resnum=%d => %s %s %s proxy=%s client=%s edns=%s\n", qname, resnum, result_ip, is_override?"(override)":"", is_proxy?"(proxy)":"", proxy_client, str_client, s_edns_client);
+    // printf("resolve %s resnum=%d => %s %s %s proxy=%s client=%s edns=%s\n", qname, resnum, result_ip, is_override?"(override)":"", is_proxy?"(proxy)":"", proxy_client, str_client, s_edns_client);
 
     if (!is_test) {
 	// cid can only be 4 characters
@@ -709,10 +715,7 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 
 	if (is_proxy) {
 	    if (CFG.relay) {
-		// ngethostbyname(str_client, 32, result_ip, qname, T_A);
 		ngethostbyname(proxy_client, mask, result_ip, qname, T_A);
-	    } else {
-		printf("  NOT RELAYING to %s\n", proxy_client);
 	    }
 	}
 
