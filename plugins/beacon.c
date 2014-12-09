@@ -17,6 +17,25 @@
  *
  */
 
+/*
+ * Beacon config examples
+
+  plugins => {
+    reflect => {}
+    beacon => {
+    node_id => "use2"
+    node_ip => "54.91.67.105"
+    domain => "jisusaiche.info."
+    domain_test => "use2.thesaiche.com."
+    blackhole => "127.0.0.1"
+    blackhole_as_refused => false
+    relay => true
+    relay_edns_client => true
+    }
+  }
+
+ */
+
 #define GDNSD_PLUGIN_NAME beacon
 
 #include "config.h"
@@ -51,6 +70,7 @@ typedef struct {
     uint8_t debug;
     uint8_t timer;
     uint8_t relay;
+    uint8_t relay_edns_client;
 } beacon_config;
 
 // Global CFG for this plugin
@@ -263,6 +283,14 @@ static bool config_res(const char* resname, unsigned resname_len V_UNUSED, vscf_
 	    if (strcmp(val, "true") == 0)
 		CFG.relay = 1;
 	}
+    } else if (strcmp(resname, "relay_edns_client") == 0) {
+	if (vscf_get_type(addr) != VSCF_SIMPLE_T)
+	    log_fatal("plugin_beacon: resource %s: must be 'true' or 'false'", resname);
+	else {
+	    const char* val = vscf_simple_get_data(addr);
+	    if (strcmp(val, "true") == 0)
+		CFG.relay_edns_client = 1;
+	}
     }
     return 1;
 }
@@ -433,16 +461,16 @@ void ngethostbyname(char* client, uint8_t mask, const char *target, unsigned cha
  
     dns = (struct DNS_HEADER *)&buf;
     dns->id = (unsigned short) htons(getpid());
-    dns->qr = 0; 
-    dns->opcode = 0;
-    dns->aa = 0;
-    dns->tc = 0;
     dns->rd = 0;
-    dns->ra = 0;
-    dns->z = 0;
-    dns->ad = 0;
-    dns->cd = 0;
+    dns->tc = 0;
+    dns->aa = 0;
+    dns->opcode = 0;
+    dns->qr = 0; 
     dns->rcode = 0;
+    dns->cd = 0;
+    dns->ad = 0;
+    dns->z = 0;
+    dns->ra = 0;
     dns->q_count = htons(1);
     dns->ans_count = 0;
     dns->auth_count = 0;
@@ -454,8 +482,6 @@ void ngethostbyname(char* client, uint8_t mask, const char *target, unsigned cha
     qinfo->qtype = htons( query_type );
     qinfo->qclass = htons(1);
  
-    // TODO: ADD EDNS CLIENT
-
     unsigned int packet_len = sizeof(struct DNS_HEADER) + (strlen((const char*)qname)+1) + sizeof(struct QUESTION);
 
     /*
@@ -466,35 +492,44 @@ void ngethostbyname(char* client, uint8_t mask, const char *target, unsigned cha
 
     uint8_t edns_len = 0;
 
-    /*
-    // Add quick & dirty EDNS0 client subnet for the relay of the request
-    edns_len = 22;
-    struct sockaddr_in edns;
-    memset(&edns,0,sizeof edns);  
-    char str_client[40];
-    strcpy(str_client, client);
-    edns.sin_family = AF_INET;
-    inet_aton(str_client, &edns.sin_addr);
+    if (CFG.relay_edns_client && mask != 0) {
 
-    const char* edns_info = "\x00\x00\x29\x10\x00\x00\x00\x80\x00\x00\x0b\x00\x08\x00\x07\x00\x01";
-    memcpy(buf+packet_len, edns_info, 17);
+	// Add quick & dirty EDNS0 client subnet for the relay of the request
+	edns_len = 22;
+	struct sockaddr_in edns;
+	memset(&edns,0,sizeof edns);  
+	char str_client[40];
+	strcpy(str_client, client);
+	edns.sin_family = AF_INET;
+	inet_aton(str_client, &edns.sin_addr);
+	
+	const char* edns_info = "\x00\x00\x29\x10\x00\x00\x00\x00\x00\x00";
+	memcpy(buf+packet_len, edns_info, 10);
+	
+	const char* edns_addr_info_24 = "\x0b\x00\x08\x00\x07\x00\x01";
+	const char* edns_addr_info_32 = "\x0c\x00\x08\x00\x08\x00\x01";
+	memcpy(buf+packet_len+10, mask == 24 ? edns_addr_info_24 : edns_addr_info_32, 7);
 
-    // encode the client mask
-    buf[packet_len+17] = mask;
-    buf[packet_len+18] = 0;
+	// encode the client mask
+	buf[packet_len+17] = mask;
+	buf[packet_len+18] = 0;
 
-    // encode the client address, could be a compressed address. Only handlng /24 and /32 properly
-    buf[packet_len+19] = edns.sin_addr.s_addr & 0xFF;
-    buf[packet_len+20] = (edns.sin_addr.s_addr & 0xFF00)>>8;
-    buf[packet_len+21] = (edns.sin_addr.s_addr & 0xFF0000)>>16; 
-    if (mask == 32) {
-	buf[packet_len+22] = (edns.sin_addr.s_addr & 0xFF000000)>>24; 
-	edns_len++;
+	// encode the client address, could be a compressed address. Only handlng /24 and /32 properly
+	buf[packet_len+19] = edns.sin_addr.s_addr & 0xFF;
+	buf[packet_len+20] = (edns.sin_addr.s_addr & 0xFF00)>>8;
+	buf[packet_len+21] = (edns.sin_addr.s_addr & 0xFF0000)>>16; 
+	if (mask == 32) {
+	    buf[packet_len+22] = (edns.sin_addr.s_addr & 0xFF000000)>>24; 
+	    edns_len++;
+	}
+	
     }
-    
+
+    /*
+    printf("-- Query Packet len=%d\n", packet_len+edns_len);
     hex_and_ascii_print("\r\n", buf, packet_len+edns_len);
     printf("\n");
-    */    
+    */
 
     struct sockaddr_in dest;
     dest.sin_family = AF_INET;
@@ -502,6 +537,7 @@ void ngethostbyname(char* client, uint8_t mask, const char *target, unsigned cha
     dest.sin_addr.s_addr = inet_addr(target);
     s = socket(AF_INET , SOCK_DGRAM , IPPROTO_UDP); //UDP packet for DNS queries
  
+    // printf("ngethostbyname: forwarding query to %s edns_client=%d\n", target, CFG.relay_edns_client);
     if (sendto(s,(char*)buf,packet_len+edns_len,0,(struct sockaddr*)&dest,sizeof(dest)) >= 0) {
 	//Receive the answer. We really don't care what it is. 
 	recvfrom (s,(char*)buf , 65536 , 0 , (struct sockaddr*)&dest , (socklen_t*)&i);
@@ -528,6 +564,7 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
     CFG.debug = 0;
     CFG.timer = 0;
     CFG.relay = 0;
+    CFG.relay_edns_client = 0;
     strcpy(CFG.event_channel, "beacon");
 
     unsigned residx = 0;
@@ -599,7 +636,6 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
     PWord_t PV = NULL;
     JLG(PV, RES_REVERSE_CACHE, resnum);
     char* result_ip = CFG.ip;
-    uint8_t is_override = 0;
     uint8_t is_proxy = 0;
     // Determine if we've got an zone level answer for this resolution
     // beacon!IPV4 => give up the IPV4
@@ -612,7 +648,6 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	    is_proxy = 1;
 	    result_ip += 6;
 	}
-	is_override = 1;
     }
 
     // Deferred until iothread init (after potential daemonization)
@@ -649,7 +684,6 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
     char s_edns_client[DMN_ANYSIN_MAXLEN+1];
     client_subnet_addr.s_addr = cinfo->edns_client.sin.sin_addr.s_addr;
     char* s_edns = inet_ntoa(client_subnet_addr);
-    uint8_t mask = 32;
 
     // printf("s_client=%s\n", str_client);
     // printf("s_edns=%s\n", s_edns);
@@ -658,8 +692,6 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	strcpy(s_edns_client, "-");
     else {
 	sprintf(s_edns_client, "%s/%d", s_edns, cinfo->edns_client_mask);
-	mask = cinfo->edns_client_mask;
-	// proxy_client = s_edns_client;
 	proxy_client = s_edns;
     }
 	
@@ -676,7 +708,7 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	}
     }
 
-    // printf("resolve %s resnum=%d => %s %s %s proxy=%s client=%s edns=%s\n", qname, resnum, result_ip, is_override?"(override)":"", is_proxy?"(proxy)":"", proxy_client, str_client, s_edns_client);
+    // printf("resolve %s resnum=%d => %s is_proxy=%d%s proxy=%s client=%s edns=%s\n", qname, resnum, result_ip, is_proxy, proxy_client, str_client, s_edns_client);
 
     if (!is_test) {
 	// cid can only be 4 characters
@@ -713,12 +745,10 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	gdnsd_anysin_fromstr(result_ip, 0, &tmpsin);
 	gdnsd_result_add_anysin(result, &tmpsin); 
 
-	if (is_proxy) {
-	    if (CFG.relay) {
-		ngethostbyname(proxy_client, mask, result_ip, qname, T_A);
-	    }
+	// maybe we'll be forwarding the ednsclient along
+	if (is_proxy && CFG.relay != 0) {
+	    ngethostbyname(proxy_client, cinfo->edns_client_mask, result_ip, qname, T_A);
 	}
-
 
    } else if (CFG.blackhole_as_refused) {
 	// REFUSED. Possibly not very kosher. But sort of equivalent of simply dropping the request.
