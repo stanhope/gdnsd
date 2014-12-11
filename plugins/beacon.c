@@ -31,6 +31,7 @@
     blackhole_as_refused => false
     relay => true
     relay_edns_client => true
+    statsd_enabled => true
     }
   }
 
@@ -43,11 +44,13 @@
 #include <string.h>
 
 #define DYN_BEACON
+#define STATSD
 #include <time.h>
 #include <sys/time.h>
 #include <ctype.h>
 #include <Judy.h>
 #include "hiredis.h"
+#include "statsd-client.h"
 
 static void redis_init(void);
 void* dyn_beacon_timer (void * args);
@@ -71,6 +74,10 @@ typedef struct {
     uint8_t timer;
     uint8_t relay;
     uint8_t relay_edns_client;
+    uint8_t statsd_enabled;
+    statsd_link *statsd;
+    uint reqs;
+    uint refused;
 } beacon_config;
 
 // Global CFG for this plugin
@@ -117,6 +124,26 @@ void* dyn_beacon_timer (void * args V_UNUSED) {
 
 	log_debug("%f beacon new=%u tot=%u", current_time(), (unsigned int)delta, (unsigned int)CFG.event_total);
 	
+#ifdef STATSD
+	if (CFG.statsd_enabled && CFG.statsd == NULL) {
+	    CFG.statsd = statsd_init_with_namespace("127.0.0.1", 8125, CFG.id);
+	}
+	
+	if (CFG.statsd != NULL) {
+#define MAX_LINE_LEN 200
+#define PKT_LEN 1400
+	    char pkt[PKT_LEN];
+	    char tmp[MAX_LINE_LEN];
+	    pkt[0]=0;
+	    statsd_prepare(CFG.statsd, "dns_reqs", CFG.reqs, "c", 1.0, tmp, MAX_LINE_LEN, 1);
+	    strcat(pkt, tmp);
+	    statsd_prepare(CFG.statsd, "dns_refused", CFG.refused, "c", 1.0, tmp, MAX_LINE_LEN, 1);
+	    strcat(pkt, tmp);
+	    statsd_send(CFG.statsd, pkt);
+	}
+	CFG.reqs = 0;
+	CFG.refused = 0;
+#endif
 	if (delta > 0) {
 
 	    if (CFG.redis == NULL) {
@@ -253,6 +280,13 @@ static bool config_res(const char* resname, unsigned resname_len V_UNUSED, vscf_
 	    const char* val = vscf_simple_get_data(addr);
 	    strcpy(CFG.domain_test, val);
 	}
+    } else if (strcmp(resname, "event_channel") == 0) {
+	if (vscf_get_type(addr) != VSCF_SIMPLE_T)
+	    log_fatal("plugin_beacon: resource %s: must be a channel in string form", resname);
+	else {
+	    const char* val = vscf_simple_get_data(addr);
+	    strcpy(CFG.event_channel, val);
+	}
     } else if (strcmp(resname, "blackhole") == 0) {
 	if (vscf_get_type(addr) != VSCF_SIMPLE_T)
 	    log_fatal("plugin_beacon: resource %s: must be an IP address or a domainname in string form", resname);
@@ -290,6 +324,14 @@ static bool config_res(const char* resname, unsigned resname_len V_UNUSED, vscf_
 	    const char* val = vscf_simple_get_data(addr);
 	    if (strcmp(val, "true") == 0)
 		CFG.relay_edns_client = 1;
+	}
+    } else if (strcmp(resname, "statsd_enabled") == 0) {
+	if (vscf_get_type(addr) != VSCF_SIMPLE_T)
+	    log_fatal("plugin_beacon: resource %s: must be 'true' or 'false'", resname);
+	else {
+	    const char* val = vscf_simple_get_data(addr);
+	    if (strcmp(val, "true") == 0)
+		CFG.statsd_enabled = 1;
 	}
     }
     return 1;
@@ -565,6 +607,8 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
     CFG.timer = 0;
     CFG.relay = 0;
     CFG.relay_edns_client = 0;
+    CFG.statsd_enabled = 0;
+    CFG.statsd = NULL;
     strcpy(CFG.event_channel, "beacon");
 
     unsigned residx = 0;
@@ -595,9 +639,12 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
 	printf("ERROR: Plugin not configured properly\n");
 	exit(1);
     } else {
-	log_debug("plugin_beacon: config id=%s ip=%s domain=%s domain_test=%s blackhole=%s blackhole_as_refused=%s relay=%s",
+	log_debug("plugin_beacon: config id=%s ip=%s domain=%s domain_test=%s blackhole=%s blackhole_as_refused=%s relay=%s statsd=%d channel=%s",
 		  CFG.id, CFG.ip, CFG.domain, CFG.domain_test, CFG.blackhole_ip, 
-		  CFG.blackhole_as_refused ? "true":"false", CFG.relay?"true":"false");
+		  CFG.blackhole_as_refused ? "true":"false", 
+		  CFG.relay?"true":"false",
+		  CFG.statsd_enabled,
+		  CFG.event_channel);
     }
 
 }
@@ -642,9 +689,8 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
     // beacon!proxy_IPV4 => give up the IPV4 and 
     if (PV != NULL) {
 	result_ip =(char*)*PV;
-	const char* proxy = "proxy_";
-	char* res = strstr(proxy, result_ip);
-	if (res == NULL) {
+	char* res = strcmp(result_ip, "proxy_");
+	if (res == result_ip) {
 	    is_proxy = 1;
 	    result_ip += 6;
 	}
@@ -708,8 +754,6 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	}
     }
 
-    // printf("resolve %s resnum=%d => %s is_proxy=%d%s proxy=%s client=%s edns=%s\n", qname, resnum, result_ip, is_proxy, proxy_client, str_client, s_edns_client);
-
     if (!is_test) {
 	// cid can only be 4 characters
 	if (strlen(cid) != 4)
@@ -724,12 +768,15 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	    is_valid = 0;
     }
     
-    // printf("..resnum=%u\ncid=%s\n..cdata=%s\n..beacon=%s\n..domain=%s\n..client=%s\n..edns_client=%s\n..is_valid=%d\n..is_test=%d\n..domain_test=%s\n", resnum,cid,cdata,beacon,domain,s_client, s_edns_client, is_valid, is_test, CFG.domain_test);
+    //printf("resolve %s => %s\n..resnum=%u\n..cid=%s\n..cdata=%s\n..beacon=%s\n..domain=%s\n..client=%s\n..edns_client=%s\n..is_valid=%d\n..is_test=%d\n..domain_test=%s\n..is_proxy=%d\n", qname, result_ip,resnum,cid,cdata,beacon,domain,s_client, s_edns_client, is_valid, is_test, CFG.domain_test, is_proxy);
 
     if (is_valid) {
 	// Don't publish beacon telemetry if it was for the test domain
 	if (!is_test) {
 	    pthread_mutex_lock(&DYN_BEACON_MUTEX); 
+#ifdef STATSD
+	    CFG.reqs++;
+#endif
 	    char* val = (char*)malloc(256);
 	    sprintf(val, "%f,D,%s,%s,%s,%s,%s,%s", network_time,CFG.id,str_client, beacon, cid, cdata, s_edns_client);
 	    ++CFG.event_count;
@@ -752,9 +799,19 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 
    } else if (CFG.blackhole_as_refused) {
 	// REFUSED. Possibly not very kosher. But sort of equivalent of simply dropping the request.
+#ifdef STATSD
+	pthread_mutex_lock(&DYN_BEACON_MUTEX); 
+	CFG.refused++;
+	pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
+#endif
 	((wire_dns_header_t*)cinfo->res_hdr)->flags2 = DNS_RCODE_REFUSED;
     } else {
 	// Return blackhole IP with no error
+#ifdef STATSD
+	pthread_mutex_lock(&DYN_BEACON_MUTEX); 
+	CFG.refused++;
+	pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
+#endif
 	dmn_anysin_t tmpsin;
 	gdnsd_anysin_fromstr(CFG.blackhole_ip, 0, &tmpsin);
 	gdnsd_result_add_anysin(result, &tmpsin);
