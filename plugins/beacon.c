@@ -78,7 +78,12 @@ typedef struct {
     statsd_link *statsd;
     uint reqs;
     uint refused;
+    uint unique;
+    uint unique_total;
 } beacon_config;
+
+Pvoid_t UNIQUE_ARRAY = (Pvoid_t) NULL;
+Pvoid_t UNIQUE_ARRAY_TOTAL = (Pvoid_t) NULL;
 
 // Global CFG for this plugin
 static beacon_config CFG;
@@ -122,7 +127,7 @@ void* dyn_beacon_timer (void * args V_UNUSED) {
 	Word_t delta = CFG.event_count - CFG.event_total;
 	CFG.event_total = CFG.event_count;
 
-	log_debug("%f beacon new=%u tot=%u", current_time(), (unsigned int)delta, (unsigned int)CFG.event_total);
+	log_debug("%f beacon new=%u tot=%u ip=%u ip_total=%u", current_time(), (unsigned int)delta, (unsigned int)CFG.event_total, CFG.unique, CFG.unique_total);
 	
 #ifdef STATSD
 	if (CFG.statsd_enabled && CFG.statsd == NULL) {
@@ -139,10 +144,22 @@ void* dyn_beacon_timer (void * args V_UNUSED) {
 	    strcat(pkt, tmp);
 	    statsd_prepare(CFG.statsd, "dns_refused", CFG.refused, "c", 1.0, tmp, MAX_LINE_LEN, 1);
 	    strcat(pkt, tmp);
+	    statsd_prepare(CFG.statsd, "dns_unique", CFG.unique, "c", 1.0, tmp, MAX_LINE_LEN, 1);
+	    strcat(pkt, tmp);
+	    statsd_prepare(CFG.statsd, "dns_unique_total", CFG.unique_total, "g", 1.0, tmp, MAX_LINE_LEN, 1);
+	    strcat(pkt, tmp);
 	    statsd_send(CFG.statsd, pkt);
 	}
 	CFG.reqs = 0;
 	CFG.refused = 0;
+	CFG.unique = 0;
+
+	// Clear most recent unique IPs array
+	Word_t Rc_word;
+	J1FA(Rc_word, UNIQUE_ARRAY);
+	(void)Rc_word;
+
+	// CFG.unique_clients = (Pvoid_t) NULL;
 #endif
 	if (delta > 0) {
 
@@ -610,6 +627,10 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
     CFG.statsd_enabled = 0;
     CFG.statsd = NULL;
     strcpy(CFG.event_channel, "beacon");
+    CFG.reqs = 0;
+    CFG.refused = 0;
+    CFG.unique = 0;
+    CFG.unique_total = 0;
 
     unsigned residx = 0;
     vscf_hash_iterate(config, false, config_res, &residx);
@@ -774,9 +795,32 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	// Don't publish beacon telemetry if it was for the test domain
 	if (!is_test) {
 	    pthread_mutex_lock(&DYN_BEACON_MUTEX); 
+
 #ifdef STATSD
 	    CFG.reqs++;
+
+	    Word_t Index = cinfo->dns_source.sin.sin_addr.s_addr;
+	    uint8_t* ch = (uint8_t*)&Index;
+	    ch[3] = 0; // Anon to /24
+	    int    Rc_int; 
+
+	    J1T(Rc_int, UNIQUE_ARRAY_TOTAL, Index);
+	    if (Rc_int == 0) {
+		J1S(Rc_int, UNIQUE_ARRAY_TOTAL, Index);
+		CFG.unique_total++;
+	    }
+
+	    J1T(Rc_int, UNIQUE_ARRAY, Index);
+	    if (Rc_int == 1) {
+		printf("!UNIQUE ip=%s cnt=%u tot=%u\n", str_client, CFG.unique, CFG.unique_total);
+	    } else {
+		J1S(Rc_int, UNIQUE_ARRAY, Index);
+		CFG.unique++;
+		printf("UNIQUE ip=%s %08lx cnt=%u tot=%u\n", str_client, Index, CFG.unique, CFG.unique_total);
+	    }
+
 #endif
+
 	    char* val = (char*)malloc(256);
 	    sprintf(val, "%f,D,%s,%s,%s,%s,%s,%s", network_time,CFG.id,str_client, beacon, cid, cdata, s_edns_client);
 	    ++CFG.event_count;
@@ -791,6 +835,9 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	dmn_anysin_t tmpsin;
 	gdnsd_anysin_fromstr(result_ip, 0, &tmpsin);
 	gdnsd_result_add_anysin(result, &tmpsin); 
+        // uint8_t cntmp[256];
+        // gdnsd_dname_from_string(cntmp, "jisusaiche.com.", 8);
+        // gdnsd_result_add_cname(result, cntmp, origin);
 
 	// maybe we'll be forwarding the ednsclient along
 	if (is_proxy && CFG.relay != 0) {
