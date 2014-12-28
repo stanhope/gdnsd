@@ -151,6 +151,8 @@ void* dyn_beacon_timer (void * args V_UNUSED) {
 	    strcat(pkt, tmp);
 	    statsd_prepare(CFG.statsd, "dns_unique", CFG.unique, "c", 1.0, tmp, MAX_LINE_LEN, 1);
 	    strcat(pkt, tmp);
+	    statsd_prepare(CFG.statsd, "dns_unique_total", CFG.unique_total, "g", 1.0, tmp, MAX_LINE_LEN, 1);
+	    strcat(pkt, tmp);
 	    statsd_prepare(CFG.statsd, "dns_edns", CFG.edns, "c", 1.0, tmp, MAX_LINE_LEN, 1);
 	    strcat(pkt, tmp);
 	    statsd_prepare(CFG.statsd, "dns_edns_total", CFG.edns_total, "g", 1.0, tmp, MAX_LINE_LEN, 1);
