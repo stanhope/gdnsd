@@ -25,6 +25,7 @@
     beacon => {
     node_id => "use2"
     node_ip => "54.91.67.105"
+    node_ipv6 => "2600:2001:1:26::199"
     domain => "jisusaiche.info."
     domain_test => "use2.thesaiche.com."
     blackhole => "127.0.0.1"
@@ -62,6 +63,7 @@ typedef struct {
     char event_channel[32];
     char id[5];
     char ip[40];
+    char ipV6[46];
     char domain[64];
     char domain_test[64];
     char blackhole_ip[40];
@@ -297,6 +299,14 @@ static bool config_res(const char* resname, unsigned resname_len V_UNUSED, vscf_
 	    const char* val = vscf_simple_get_data(addr);
 	    strcpy(CFG.ip, val);
 	}
+    } else if (strcmp(resname, "node_ipV6") == 0) {
+	if (vscf_get_type(addr) != VSCF_SIMPLE_T)
+	    log_fatal("plugin_beacon: resource %s: must be an IP address in string form", resname);
+	else {
+	    const char* val = vscf_simple_get_data(addr);
+	    printf("Settingup IPV6 answer %s\n", val);
+	    strcpy(CFG.ipV6, val);
+	}
     } else if (strcmp(resname, "domain") == 0) {
 	if (vscf_get_type(addr) != VSCF_SIMPLE_T)
 	    log_fatal("plugin_beacon: resource %s: must be a domainname in string form", resname);
@@ -380,7 +390,7 @@ static bool config_res(const char* resname, unsigned resname_len V_UNUSED, vscf_
 #define T_MX 15 //Mail server
  
 //Function Prototypes
-void ngethostbyname (char*, uint8_t, const char*, unsigned char* , int);
+void ngethostbyname (const char*, uint8_t, const char*, unsigned char* , int);
 void EncodeQname (unsigned char*,unsigned char*);
  
 //DNS header structure
@@ -522,7 +532,7 @@ void hex_and_ascii_print(register const char *ident, register const u_char *cp, 
 /*
  * Perform a DNS query by sending a UDP packet. 
  */
-void ngethostbyname(char* client, uint8_t mask, const char *target, unsigned char *host , int query_type)
+void ngethostbyname(const char* client, uint8_t mask, const char *target, unsigned char *host , int query_type)
 {
     // printf("ngethostbyname %s client=%s mask=%u target=%s\n", host, client, mask, target);
 
@@ -625,6 +635,7 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
 
     // Config default values
     CFG.ip[0] = 0;
+    CFG.ipV6[0] = 0;
     CFG.id[0] = 0;
     CFG.domain[0] = 0;
     CFG.domain_test[0] = 0;
@@ -661,6 +672,9 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
 	printf("  'node_ip' not specified\n");
 	is_valid = 0;
     }
+    if (CFG.ipV6[0] == 0) {
+	printf("  'node_ipV6' not specified\n");
+    }
 
     if (CFG.domain[0] == 0) {
 	printf("  'domain' not specified\n");
@@ -676,8 +690,8 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
 	printf("ERROR: Plugin not configured properly\n");
 	exit(1);
     } else {
-	log_debug("plugin_beacon: config id=%s ip=%s domain=%s domain_test=%s blackhole=%s blackhole_as_refused=%s relay=%s statsd=%d channel=%s",
-		  CFG.id, CFG.ip, CFG.domain, CFG.domain_test, CFG.blackhole_ip, 
+	log_debug("plugin_beacon: config id=%s ip=%s ipV6=%s domain=%s domain_test=%s blackhole=%s blackhole_as_refused=%s relay=%s statsd=%d channel=%s",
+		  CFG.id, CFG.ip, CFG.ipV6, CFG.domain, CFG.domain_test, CFG.blackhole_ip, 
 		  CFG.blackhole_as_refused ? "true":"false", 
 		  CFG.relay?"true":"false",
 		  CFG.statsd_enabled,
@@ -756,14 +770,25 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
     char* beacon = strtok_r(NULL, ".", &saveptr);
     domain = saveptr;
 
-    struct in_addr client, client_subnet_addr;
+    /*
+    struct in_addr client;
     client.s_addr = cinfo->dns_source.sin.sin_addr.s_addr; 
     char* s_client = inet_ntoa(client);
     char str_client[DMN_ANYSIN_MAXLEN+1];
     strcpy(str_client, s_client);
-
-
     char* proxy_client = str_client;
+    */
+
+    const char* s_client_info = dmn_logf_anysin(&cinfo->dns_source);
+    const char* proxy_client = s_client_info;
+    // uint8_t isV6 = cinfo->dns_source.sa.sa_family == AF_INET6 ? 1 :  0;
+    // printf("  clientip=%s v6=%u qtype=%u qname=%s\n", s_client_info, isV6, cinfo->qtype, cinfo->qname);
+
+    if (cinfo->qtype == 28) {
+      result_ip = CFG.ipV6;
+    }
+
+    struct in_addr client_subnet_addr;
     char s_edns_client[DMN_ANYSIN_MAXLEN+1];
     client_subnet_addr.s_addr = cinfo->edns_client.sin.sin_addr.s_addr;
     char* s_edns = inet_ntoa(client_subnet_addr);
@@ -847,7 +872,8 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 #endif
 
 	    char* val = (char*)malloc(256);
-	    sprintf(val, "%f,D,%s,%s,%s,%s,%s,%s", network_time,CFG.id,str_client, beacon, cid, cdata, s_edns_client);
+	    sprintf(val, "%f,D,%s,%s,%s,%s,%s,%s,%u", network_time,CFG.id,s_client_info, beacon, cid, cdata, s_edns_client, cinfo->qtype);
+	    log_info("%s", val);
 	    ++CFG.event_count;
 	    JError_t J_Error;
 	    if (((PV) = (PWord_t)JudyLIns(&CFG.event_cache, CFG.event_count, &J_Error)) == PJERR) {
