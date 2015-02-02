@@ -2009,6 +2009,7 @@ unsigned process_dns_query(void* ctx_asvoid, dnspacket_stats_t* stats, const dmn
 
         if(likely(!ctx->chaos)) {
             memcpy(&ctx->client_info.dns_source, asin, sizeof(dmn_anysin_t));
+	    ctx->client_info.qtype = ctx->qtype;
             res_offset = answer_from_db_outer(ctx, stats, lqname, res_offset);
         }
         else {

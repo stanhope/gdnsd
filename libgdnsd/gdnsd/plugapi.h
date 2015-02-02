@@ -78,6 +78,7 @@ typedef struct {
     dmn_anysin_t edns_client;      // edns-client-subnet address portion
     unsigned edns_client_mask;     // edns-client-subnet mask portion
     void* res_hdr;
+    unsigned short qtype;
     uint8_t qname[512];
 } client_info_t;               //  ^(if zero, edns_client is invalid (was not sent))
 
