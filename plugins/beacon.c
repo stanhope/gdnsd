@@ -754,13 +754,13 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	CFG.timer = 1;
     }
 
-    // printf("plugin_beacon_resolve\n");
-
     double network_time = current_time();
     u_int is_valid = 1;
     u_int is_test = 0;
     const u_char* qdata = cinfo->qname+1;
     u_char* qname = convert_qname(qdata);
+
+    // printf("plugin_beacon_resolve is_udp=%u qtype=%u qname=%s\n", cinfo->is_udp, cinfo->qtype, qname);
 
     char temp[1024];
     strcpy(temp, (char*)qname);
@@ -769,15 +769,6 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
     char* cdata = strtok_r(NULL, ".", &saveptr);
     char* beacon = strtok_r(NULL, ".", &saveptr);
     domain = saveptr;
-
-    /*
-    struct in_addr client;
-    client.s_addr = cinfo->dns_source.sin.sin_addr.s_addr; 
-    char* s_client = inet_ntoa(client);
-    char str_client[DMN_ANYSIN_MAXLEN+1];
-    strcpy(str_client, s_client);
-    char* proxy_client = str_client;
-    */
 
     const char* s_client_info = dmn_logf_anysin(&cinfo->dns_source);
     const char* proxy_client = s_client_info;
@@ -872,8 +863,8 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 #endif
 
 	    char* val = (char*)malloc(256);
-	    sprintf(val, "%f,D,%s,%s,%s,%s,%s,%s,%u", network_time,CFG.id,s_client_info, beacon, cid, cdata, s_edns_client, cinfo->qtype);
-	    log_info("%s", val);
+	    sprintf(val, "%f,D,%s,%s,%s,%s,%s,%s,%u,%c", network_time,CFG.id,s_client_info, beacon, cid, cdata, s_edns_client, cinfo->qtype, cinfo->is_udp?'U':'T');
+	    log_debug("%s", val);
 	    ++CFG.event_count;
 	    JError_t J_Error;
 	    if (((PV) = (PWord_t)JudyLIns(&CFG.event_cache, CFG.event_count, &J_Error)) == PJERR) {
@@ -910,6 +901,9 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	CFG.refused++;
 	pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
 #endif
+	char val[256];
+	sprintf(val, "%s,%s,%s,%u,%c", s_client_info, qname, s_edns_client, cinfo->qtype, cinfo->is_udp?'U':'T');
+	log_info("BLACKHOLE %s\n", val);
 	dmn_anysin_t tmpsin;
 	gdnsd_anysin_fromstr(CFG.blackhole_ip, 0, &tmpsin);
 	gdnsd_result_add_anysin(result, &tmpsin);

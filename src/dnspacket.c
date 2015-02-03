@@ -1799,6 +1799,7 @@ static unsigned answer_from_db(dnsp_ctx_t* ctx, dnspacket_stats_t* stats, const 
     // @componentry, copy or pointer??? copy for now.
     strcpy((char*)ctx->client_info.qname, (const char*)qname);
     ctx->client_info.res_hdr = res_hdr;
+    ctx->client_info.is_udp = ctx->is_udp;
 
     ltree_dname_status_t status = DNAME_NOAUTH;
     unsigned auth_depth;
@@ -1903,7 +1904,6 @@ static unsigned answer_from_db(dnsp_ctx_t* ctx, dnspacket_stats_t* stats, const 
         dmn_assert(status == DNAME_NOAUTH);
         if(!via_cname) {
             res_hdr->flags2 = DNS_RCODE_REFUSED;
-	    printf("REFUSED\n");
             stats_own_inc(&stats->refused);
         }
     }

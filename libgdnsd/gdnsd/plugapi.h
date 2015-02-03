@@ -77,9 +77,10 @@ typedef struct {
     dmn_anysin_t dns_source;       // address of last source DNS cache/forwarder
     dmn_anysin_t edns_client;      // edns-client-subnet address portion
     unsigned edns_client_mask;     // edns-client-subnet mask portion
-    void* res_hdr;
-    unsigned short qtype;
-    uint8_t qname[512];
+    void* res_hdr;                 // @componentry: header so that a plugin that does blackholing can issue REFUSED
+    unsigned short qtype;          // @componentry: so it can be emitted in telemetry from a plugin
+    uint8_t is_udp;		   // @componentry: so it can be emitted in telemetry from a plugin
+    uint8_t qname[512];            // @componentry: so plugin can analyze it and fail if not as expected
 } client_info_t;               //  ^(if zero, edns_client is invalid (was not sent))
 
 // Private result structure for dynamic resolution plugins
