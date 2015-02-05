@@ -318,7 +318,8 @@ struct sdshdr {
     char buf[];
 };
 
-static inline void sdsfree(sds s);
+void sdsfree(sds s);
+
 static inline size_t sdsavail(const sds s);
 static inline size_t sdslen(const sds s);
 

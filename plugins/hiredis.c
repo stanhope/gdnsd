@@ -66,6 +66,12 @@ static void *createArrayObject(const redisReadTask *task, int elements);
 static void *createIntegerObject(const redisReadTask *task, long long value);
 static void *createNilObject(const redisReadTask *task);
 
+/* Free an sds string. No operation is performed if 's' is NULL. */
+void sdsfree(sds s) {
+    if (s == NULL) return;
+    free(s-sizeof(struct sdshdr));
+}
+
 /* Default set of functions to build the reply. Keep in mind that such a
  * function returning NULL is interpreted as OOM. */
 static redisReplyObjectFunctions defaultFunctions = {
@@ -1846,12 +1852,6 @@ sds sdsnew(const char *init) {
 /* Duplicate an sds string. */
 sds sdsdup(const sds s) {
     return sdsnewlen(s, sdslen(s));
-}
-
-/* Free an sds string. No operation is performed if 's' is NULL. */
-static inline void sdsfree(sds s) {
-    if (s == NULL) return;
-    free(s-sizeof(struct sdshdr));
 }
 
 /* Set the sds string length to the length as obtained with strlen(), so

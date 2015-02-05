@@ -128,9 +128,10 @@ static int should_send(float sample_rate)
 
 int statsd_send(statsd_link *link, const char *message)
 {
-  int slen = sizeof(link->server);
+  // int slen = sizeof(link->server);
+  socklen_t slen = sizeof(link->server);
 
-  if (sendto(link->sock, message, strlen(message), 0, (struct sockaddr *) &link->server, slen) == -1) {
+  if (sendto(link->sock, message, strlen(message), 0, (struct sockaddr *)&link->server, slen) == -1) {
     perror("sendto");
     return -1;
   }
