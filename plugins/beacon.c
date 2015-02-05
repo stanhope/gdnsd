@@ -29,6 +29,7 @@
     domain => "jisusaiche.info."
     domain_test => "use2.thesaiche.com."
     blackhole => "127.0.0.1"
+    blackhole_ipv6 => "::1"
     blackhole_as_refused => false
     relay => true
     relay_edns_client => true
@@ -67,6 +68,7 @@ typedef struct {
     char domain[64];
     char domain_test[64];
     char blackhole_ip[40];
+    char blackhole_ipV6[46];
     uint8_t blackhole_as_refused;
     redisContext *redis;
     Pvoid_t event_cache;
@@ -334,6 +336,13 @@ static bool config_res(const char* resname, unsigned resname_len V_UNUSED, vscf_
 	else {
 	    const char* val = vscf_simple_get_data(addr);
 	    strcpy(CFG.blackhole_ip, val);
+	}
+    } else if (strcmp(resname, "blackhole_ipV6") == 0) {
+	if (vscf_get_type(addr) != VSCF_SIMPLE_T)
+	    log_fatal("plugin_beacon: resource %s: must be an IP address or a domainname in string form", resname);
+	else {
+	    const char* val = vscf_simple_get_data(addr);
+	    strcpy(CFG.blackhole_ipV6, val);
 	}
     } else if (strcmp(resname, "channel") == 0) {
 	if (vscf_get_type(addr) != VSCF_SIMPLE_T)
@@ -690,8 +699,8 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
 	printf("ERROR: Plugin not configured properly\n");
 	exit(1);
     } else {
-	log_debug("plugin_beacon: config id=%s ip=%s ipV6=%s domain=%s domain_test=%s blackhole=%s blackhole_as_refused=%s relay=%s statsd=%d channel=%s",
-		  CFG.id, CFG.ip, CFG.ipV6, CFG.domain, CFG.domain_test, CFG.blackhole_ip, 
+	log_debug("plugin_beacon: config id=%s ip=%s ipV6=%s domain=%s domain_test=%s blackhole=%s blackhole_ipV6=%s blackhole_as_refused=%s relay=%s statsd=%d channel=%s",
+		  CFG.id, CFG.ip, CFG.ipV6, CFG.domain, CFG.domain_test, CFG.blackhole_ip, CFG.blackhole_ipV6,
 		  CFG.blackhole_as_refused ? "true":"false", 
 		  CFG.relay?"true":"false",
 		  CFG.statsd_enabled,
@@ -772,7 +781,7 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 
     const char* s_client_info = dmn_logf_anysin(&cinfo->dns_source);
     const char* proxy_client = s_client_info;
-    // uint8_t isV6 = cinfo->dns_source.sa.sa_family == AF_INET6 ? 1 :  0;
+    uint8_t isV6 = cinfo->dns_source.sa.sa_family == AF_INET6 ? 1 :  0;
     // printf("  clientip=%s v6=%u qtype=%u qname=%s\n", s_client_info, isV6, cinfo->qtype, cinfo->qname);
 
     if (cinfo->qtype == 28) {
@@ -903,9 +912,14 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 #endif
 	char val[256];
 	sprintf(val, "%s,%s,%s,%u,%c", s_client_info, qname, s_edns_client, cinfo->qtype, cinfo->is_udp?'U':'T');
-	log_info("BLACKHOLE %s\n", val);
 	dmn_anysin_t tmpsin;
-	gdnsd_anysin_fromstr(CFG.blackhole_ip, 0, &tmpsin);
+	if (cinfo->qtype == 28) {
+	    log_info("BLACKHOLE V6 %s\n", val);
+	    gdnsd_anysin_fromstr(CFG.blackhole_ipV6, 0, &tmpsin);
+	} else {
+	    log_info("BLACKHOLE %s\n", val);
+	    gdnsd_anysin_fromstr(CFG.blackhole_ip, 0, &tmpsin);
+	}
 	gdnsd_result_add_anysin(result, &tmpsin);
     }
 
