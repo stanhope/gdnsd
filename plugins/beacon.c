@@ -89,6 +89,7 @@ typedef struct {
     uint edns;
     uint edns_unique_total;
     uint edns_total;
+    uint8_t heartbeat;
 } beacon_config;
 
 Pvoid_t UNIQUE_ARRAY = (Pvoid_t) NULL;
@@ -138,8 +139,9 @@ void* dyn_beacon_timer(void * args V_UNUSED) {
 	pthread_mutex_lock(&DYN_BEACON_MUTEX);  // lock the critical section
 	Word_t delta = CFG.event_count - CFG.event_total;
 	CFG.event_total = CFG.event_count;
-
-	log_debug("%f beacon new=%u tot=%u ip=%u ip_total=%u edns=%u unique=%u total=%u", current_time(), (unsigned int)delta, (unsigned int)CFG.event_total, CFG.unique, CFG.unique_total, CFG.edns, CFG.edns_unique_total, CFG.edns_total);
+	double now = current_time();
+	
+	log_debug("%f beacon new=%u tot=%u ip=%u ip_total=%u edns=%u unique=%u total=%u", now, (unsigned int)delta, (unsigned int)CFG.event_total, CFG.unique, CFG.unique_total, CFG.edns, CFG.edns_unique_total, CFG.edns_total);
 	
 #ifdef STATSD
 	if (CFG.statsd_enabled && CFG.statsd == NULL) {
@@ -256,22 +258,26 @@ void* dyn_beacon_timer(void * args V_UNUSED) {
 	    }
 	}
 
+	pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
+
 	if (CFG.redis != NULL) {
-	    char redis_cmd[256];
-	    double send_at = current_time();
-	    sprintf(redis_cmd, "PUBLISH %s %f,A,%s,%s,DNS_PULSE,SUBSCRIBERS=%d", CFG.event_channel,send_at,CFG.id,CFG.ip, CFG.subscribers);
-	    redisReply *reply = redisCommand(CFG.redis, redis_cmd);
-	    if (reply == NULL) {
-		// Need to re-establish connection
-		redisFree(CFG.redis);
-		CFG.redis = NULL;
-	    } else {
-		CFG.subscribers = reply->integer;
-		freeReplyObject(reply);
+	    if ((int)now % CFG.heartbeat == 0) {
+		pthread_mutex_lock(&DYN_BEACON_MUTEX);  // lock the critical section
+		char redis_cmd[256];
+		sprintf(redis_cmd, "PUBLISH %s %f,A,%s,%s,DNS_PULSE,SUBSCRIBERS=%d", CFG.event_channel,now,CFG.id,CFG.ip, CFG.subscribers);
+		redisReply *reply = redisCommand(CFG.redis, redis_cmd);
+		if (reply == NULL) {
+		    // Need to re-establish connection
+		    redisFree(CFG.redis);
+		    CFG.redis = NULL;
+		} else {
+		    CFG.subscribers = reply->integer;
+		    freeReplyObject(reply);
+		}
 	    }
+	    pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
 	} 
 
-	pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
     }
     return NULL;
 }
@@ -414,6 +420,16 @@ static bool config_res(const char* resname, unsigned resname_len V_UNUSED, vscf_
 	    const char* val = vscf_simple_get_data(addr);
 	    if (strcmp(val, "true") == 0)
 		CFG.statsd_enabled = 1;
+	}
+    } else if (strcmp(resname, "heartbeat") == 0) {
+	if (vscf_get_type(addr) != VSCF_SIMPLE_T)
+	    log_fatal("plugin_beacon: resource %s: must be integer", resname);
+	else {
+	    const char* val = vscf_simple_get_data(addr);
+	    int intval = atoi(val);
+	    if (intval > 0) {
+		CFG.heartbeat = intval;
+	    }
 	}
     }
     return 1;
@@ -700,6 +716,7 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
     CFG.unique_total = 0;
     CFG.edns = 0;
     CFG.edns_total = 0;
+    CFG.heartbeat = 10;
 
     unsigned residx = 0;
     vscf_hash_iterate(config, false, config_res, &residx);
@@ -732,12 +749,13 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
 	printf("ERROR: Plugin not configured properly\n");
 	exit(1);
     } else {
-	log_debug("plugin_beacon: config id=%s ip=%s ipV6=%s domain=%s domain_test=%s blackhole=%s blackhole_ipV6=%s blackhole_as_refused=%s relay=%s statsd=%d channel=%s",
+	log_debug("plugin_beacon: config id=%s ip=%s ipV6=%s domain=%s domain_test=%s blackhole=%s blackhole_ipV6=%s blackhole_as_refused=%s relay=%s statsd=%d channel=%s heartbeat=%d",
 		  CFG.id, CFG.ip, CFG.ipV6, CFG.domain, CFG.domain_test, CFG.blackhole_ip, CFG.blackhole_ipV6,
 		  CFG.blackhole_as_refused ? "true":"false", 
 		  CFG.relay?"true":"false",
 		  CFG.statsd_enabled,
-		  CFG.event_channel);
+		  CFG.event_channel,
+		  CFG.heartbeat);
     }
 
 }
@@ -947,10 +965,10 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	sprintf(val, "%s,%s,%s,%u,%c", s_client_info, qname, s_edns_client, cinfo->qtype, cinfo->is_udp?'U':'T');
 	dmn_anysin_t tmpsin;
 	if (cinfo->qtype == 28) {
-	    log_info("BLACKHOLE V6 %s\n", val);
+	    log_info("BLACKHOLE V6 %s", val);
 	    gdnsd_anysin_fromstr(CFG.blackhole_ipV6, 0, &tmpsin);
 	} else {
-	    log_info("BLACKHOLE %s\n", val);
+	    log_info("BLACKHOLE %s", val);
 	    gdnsd_anysin_fromstr(CFG.blackhole_ip, 0, &tmpsin);
 	}
 	gdnsd_result_add_anysin(result, &tmpsin);
