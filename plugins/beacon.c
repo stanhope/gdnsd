@@ -924,7 +924,7 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 
 	    char* val = (char*)malloc(256);
 	    sprintf(val, "%f,D,%s,%s,%s,%s,%s,%s,%u,%c", network_time,CFG.id,s_client_info, beacon, cid, cdata, s_edns_client, cinfo->qtype, cinfo->is_udp?'U':'T');
-	    log_debug("%s", val);
+	    // log_debug("%s", val);
 	    ++CFG.event_count;
 	    JError_t J_Error;
 	    if (((PV) = (PWord_t)JudyLIns(&CFG.event_cache, CFG.event_count, &J_Error)) == PJERR) {
