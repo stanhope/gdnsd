@@ -54,7 +54,7 @@
 #include "hiredis.h"
 #include "statsd-client.h"
 
-static void redis_init(void);
+static void redis_init(uint);
 void* dyn_beacon_timer (void * args);
 static u_char* convert_qname(const u_char* qdata);
 
@@ -71,12 +71,14 @@ typedef struct {
     char blackhole_ipV6[46];
     uint8_t blackhole_as_refused;
     redisContext *redis;
+    uint8_t redis_firstinit;
     Pvoid_t event_cache;
     Word_t  event_total;
     Word_t  event_count;
     uint8_t debug;
     uint8_t timer;
     uint8_t relay;
+    uint8_t subscribers;
     uint8_t relay_edns_client;
     uint8_t statsd_enabled;
     statsd_link *statsd;
@@ -105,17 +107,18 @@ typedef struct S_PACKED {
     uint8_t flags2;
 } wire_dns_header_t;
 
-static void redis_init(void) {
+static void redis_init(uint log) {
     CFG.redis = redisConnect("127.0.0.1", 6379);
     if (CFG.redis == NULL || CFG.redis->err) {
 	if (CFG.redis) {
-	    log_debug("Connection error: %s\n", CFG.redis->errstr);
+	    if (log) log_debug("REDIS_INIT: %s", CFG.redis->errstr);
 	    redisFree(CFG.redis);
 	    CFG.redis = NULL;
 	} else {
-	    log_debug("Connection error: can't allocate redis context\n");
+	    log_debug("Connection error: can't allocate redis context");
 	}
     } else {
+	if (log) log_debug("REDIS_INIT: %p", CFG.redis);
 	redisEnableKeepAlive(CFG.redis);
     }
 }
@@ -128,7 +131,7 @@ static double current_time(void) {
     return now;
 }
 
-void* dyn_beacon_timer (void * args V_UNUSED) {
+void* dyn_beacon_timer(void * args V_UNUSED) {
     while(true) {
 	sleep (1);
 
@@ -179,11 +182,24 @@ void* dyn_beacon_timer (void * args V_UNUSED) {
 	(void)Rc_word;
 
 #endif
-	if (delta > 0) {
+	if (CFG.redis == NULL) {
+	    if (CFG.redis_firstinit) {
+		log_debug("Init redis first time");
+		redis_init(1);
+	    } else {
+		redis_init(0);
+		if (CFG.redis_firstinit == 0) {
+		    if (CFG.redis != NULL) {
+			log_debug("Restablished redis localhost connection");
+		    }
+		}
+		else {
+		    CFG.redis_firstinit = 0;
+		}
+	    } 
+	}
 
-	    if (CFG.redis == NULL) {
-	        redis_init();
-	    }
+	if (delta > 0) {
 
 	    // Emit 32K msg at a time
 	    char buffer[32*1024];
@@ -239,6 +255,22 @@ void* dyn_beacon_timer (void * args V_UNUSED) {
 		freeReplyObject(reply);
 	    }
 	}
+
+	if (CFG.redis != NULL) {
+	    char redis_cmd[256];
+	    double send_at = current_time();
+	    sprintf(redis_cmd, "PUBLISH %s %f,A,%s,%s,DNS_PULSE,SUBSCRIBERS=%d", CFG.event_channel,send_at,CFG.id,CFG.ip, CFG.subscribers);
+	    redisReply *reply = redisCommand(CFG.redis, redis_cmd);
+	    if (reply == NULL) {
+		// Need to re-establish connection
+		redisFree(CFG.redis);
+		CFG.redis = NULL;
+	    } else {
+		CFG.subscribers = reply->integer;
+		freeReplyObject(reply);
+	    }
+	} 
+
 	pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
     }
     return NULL;
@@ -651,6 +683,7 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
     CFG.blackhole_ip[0] = 0;
     CFG.blackhole_as_refused = 0;
     CFG.redis = NULL;
+    CFG.redis_firstinit = 1;
     CFG.event_cache = (Pvoid_t) NULL;
     CFG.event_total = 0;
     CFG.event_count = 0;
@@ -781,7 +814,7 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 
     const char* s_client_info = dmn_logf_anysin(&cinfo->dns_source);
     const char* proxy_client = s_client_info;
-    uint8_t isV6 = cinfo->dns_source.sa.sa_family == AF_INET6 ? 1 :  0;
+    // uint8_t isV6 = cinfo->dns_source.sa.sa_family == AF_INET6 ? 1 :  0;
     // printf("  clientip=%s v6=%u qtype=%u qname=%s\n", s_client_info, isV6, cinfo->qtype, cinfo->qname);
 
     if (cinfo->qtype == 28) {
