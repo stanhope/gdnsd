@@ -187,13 +187,13 @@ void* dyn_beacon_timer(void * args V_UNUSED) {
 #endif
 	if (CFG.redis == NULL) {
 	    if (CFG.redis_firstinit) {
-		log_debug("Init redis first time");
+		log_info("Init redis first time");
 		redis_init(1);
 	    } else {
 		redis_init(0);
 		if (CFG.redis_firstinit == 0) {
 		    if (CFG.redis != NULL) {
-			log_debug("Restablished redis localhost connection");
+			log_info("Restablished redis localhost connection");
 		    }
 		}
 		else {
@@ -828,8 +828,11 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
     char* beacon = strtok_r(NULL, ".", &saveptr);
     domain = saveptr;
 
-    const char* s_client_info = dmn_logf_anysin(&cinfo->dns_source);
+    char s_client_info[DMN_ANYSIN_MAXSTR];
+    int name_err = dmn_anysin2str(&cinfo->dns_source, s_client_info);
+    (void)name_err;
     const char* proxy_client = s_client_info;
+
     // uint8_t isV6 = cinfo->dns_source.sa.sa_family == AF_INET6 ? 1 :  0;
     // printf("  clientip=%s v6=%u qtype=%u qname=%s\n", s_client_info, isV6, cinfo->qtype, cinfo->qname);
 
@@ -876,7 +879,7 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	    is_valid = 0;
     }
     
-    // printf("resolve %s => %s\n..resnum=%u\n..cid=%s\n..cdata=%s\n..beacon=%s\n..domain=%s\n..client=%s\n..edns_client=%s\n..is_valid=%d\n..is_test=%d\n..domain_test=%s\n..is_proxy=%d\n", qname, result_ip,resnum,cid,cdata,beacon,domain,s_client, s_edns_client, is_valid, is_test, CFG.domain_test, is_proxy);
+    // printf("..%f %s => %s resnum=%u cid=%s cdata=%s beacon=%s domain=%s client=%s edns_client=%s is_valid=%d is_test=%d domain_test=%s is_proxy=%d\n", network_time, qname, result_ip,resnum,cid,cdata,beacon,domain,s_client_info, s_edns_client, is_valid, is_test, CFG.domain_test, is_proxy);
 
     if (is_valid) {
 	// Don't publish beacon telemetry if it was for the test domain
@@ -963,10 +966,12 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	sprintf(val, "%s,%s,%s,%u,%c", s_client_info, qname, s_edns_client, cinfo->qtype, cinfo->is_udp?'U':'T');
 	dmn_anysin_t tmpsin;
 	if (cinfo->qtype == 28) {
-	    log_info("BLACKHOLE V6 %s", val);
+	    printf("..blackhole v6\n");
+	    // log_info("BLACKHOLE V6 %s", val);
 	    gdnsd_anysin_fromstr(CFG.blackhole_ipV6, 0, &tmpsin);
 	} else {
-	    log_info("BLACKHOLE %s", val);
+	    printf("..blackhole \n");
+	    // log_info("BLACKHOLE %s", val);
 	    gdnsd_anysin_fromstr(CFG.blackhole_ip, 0, &tmpsin);
 	}
 	gdnsd_result_add_anysin(result, &tmpsin);
