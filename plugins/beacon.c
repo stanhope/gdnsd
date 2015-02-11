@@ -141,7 +141,8 @@ void* dyn_beacon_timer(void * args V_UNUSED) {
 	CFG.event_total = CFG.event_count;
 	double now = current_time();
 	
-	log_debug("%f beacon new=%u tot=%u ip=%u ip_total=%u edns=%u unique=%u total=%u", now, (unsigned int)delta, (unsigned int)CFG.event_total, CFG.unique, CFG.unique_total, CFG.edns, CFG.edns_unique_total, CFG.edns_total);
+	char logline[256];
+	sprintf(logline, "new=%u,tot=%u,ip=%u,ip_total=%u,edns=%u,unique=%u,total=%u", now, (unsigned int)delta, (unsigned int)CFG.event_total, CFG.unique, CFG.unique_total, CFG.edns, CFG.edns_unique_total, CFG.edns_total);
 	
 #ifdef STATSD
 	if (CFG.statsd_enabled && CFG.statsd == NULL) {
@@ -258,13 +259,10 @@ void* dyn_beacon_timer(void * args V_UNUSED) {
 	    }
 	}
 
-	pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
-
 	if (CFG.redis != NULL) {
 	    if ((int)now % CFG.heartbeat == 0) {
-		pthread_mutex_lock(&DYN_BEACON_MUTEX);  // lock the critical section
 		char redis_cmd[256];
-		sprintf(redis_cmd, "PUBLISH %s %f,A,%s,%s,DNS_PULSE,SUBSCRIBERS=%d", CFG.event_channel,now,CFG.id,CFG.ip, CFG.subscribers);
+		sprintf(redis_cmd, "PUBLISH %s %f,A,%s,%s,DNS_PULSE,SUBSCRIBERS=%d,%s", CFG.event_channel,now,CFG.id,CFG.ip, CFG.subscribers, logline);
 		redisReply *reply = redisCommand(CFG.redis, redis_cmd);
 		if (reply == NULL) {
 		    // Need to re-establish connection
@@ -275,8 +273,8 @@ void* dyn_beacon_timer(void * args V_UNUSED) {
 		    freeReplyObject(reply);
 		}
 	    }
-	    pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
 	} 
+	pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
 
     }
     return NULL;
@@ -716,7 +714,7 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
     CFG.unique_total = 0;
     CFG.edns = 0;
     CFG.edns_total = 0;
-    CFG.heartbeat = 10;
+    CFG.heartbeat = 1;
 
     unsigned residx = 0;
     vscf_hash_iterate(config, false, config_res, &residx);
