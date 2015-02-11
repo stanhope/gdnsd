@@ -142,7 +142,7 @@ void* dyn_beacon_timer(void * args V_UNUSED) {
 	double now = current_time();
 	
 	char logline[256];
-	sprintf(logline, "new=%u,tot=%u,ip=%u,ip_total=%u,edns=%u,unique=%u,total=%u", now, (unsigned int)delta, (unsigned int)CFG.event_total, CFG.unique, CFG.unique_total, CFG.edns, CFG.edns_unique_total, CFG.edns_total);
+	sprintf(logline, "new=%u,tot=%u,ip=%u,ip_total=%u,edns=%u,unique=%u,total=%u", (unsigned int)delta, (unsigned int)CFG.event_total, CFG.unique, CFG.unique_total, CFG.edns, CFG.edns_unique_total, CFG.edns_total);
 	
 #ifdef STATSD
 	if (CFG.statsd_enabled && CFG.statsd == NULL) {
