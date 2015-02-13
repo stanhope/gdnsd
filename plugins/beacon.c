@@ -820,13 +820,32 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 
     // printf("plugin_beacon_resolve is_udp=%u qtype=%u qname=%s\n", cinfo->is_udp, cinfo->qtype, qname);
 
+    // We support two beacon qname patterns:
+    // 1) V1 (Pre  Feb 2015): CID.CDATA.BEACON.DOMAIN
+    // 2) V2 (Post Feb 2015): CID-CDATA-BEACON.DOMAIN
+
     char temp[1024];
     strcpy(temp, (char*)qname);
     char* saveptr, *domain;
-    char* cid = strtok_r(temp, ".", &saveptr);
-    char* cdata = strtok_r(NULL, ".", &saveptr);
-    char* beacon = strtok_r(NULL, ".", &saveptr);
-    domain = saveptr;
+    char *cid = NULL, *cdata = NULL, *beacon = NULL;
+
+    // Crack the QNAME and determine if it's valid
+    cid = strtok_r(temp, ".", &saveptr);
+    if (cid != NULL && strstr(cid, "-") != NULL) {
+	// Maybe have a V2 FQDN
+	char temp2[256];
+	strcpy(temp2, cid);
+	char* partptr;
+	cid = strtok_r(temp2, "-", &partptr);
+	cdata = strtok_r(NULL, "-", &partptr);
+	beacon = strtok_r(NULL, "-", &partptr);
+	domain = saveptr;
+    } else {
+	// Assume a V1 FQDN
+	cdata = strtok_r(NULL, ".", &saveptr);
+	beacon = strtok_r(NULL, ".", &saveptr);
+	domain = saveptr;
+    }
 
     char s_client_info[DMN_ANYSIN_MAXSTR];
     int name_err = dmn_anysin2str(&cinfo->dns_source, s_client_info);
@@ -966,11 +985,9 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	sprintf(val, "%s,%s,%s,%u,%c", s_client_info, qname, s_edns_client, cinfo->qtype, cinfo->is_udp?'U':'T');
 	dmn_anysin_t tmpsin;
 	if (cinfo->qtype == 28) {
-	    printf("..blackhole v6\n");
 	    // log_info("BLACKHOLE V6 %s", val);
 	    gdnsd_anysin_fromstr(CFG.blackhole_ipV6, 0, &tmpsin);
 	} else {
-	    printf("..blackhole \n");
 	    // log_info("BLACKHOLE %s", val);
 	    gdnsd_anysin_fromstr(CFG.blackhole_ip, 0, &tmpsin);
 	}
