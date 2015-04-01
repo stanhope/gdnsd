@@ -787,6 +787,56 @@ int plugin_beacon_map_res(const char* resname, const uint8_t* origin V_UNUSED) {
 
 pthread_t DNS_TELEMETRY_THREAD;
 
+// The library provided version produced invalid IPV6 addresses. Fix inline in plugin for now.
+static const char* generic_nullstr = "(null)";
+int anysin2str(const dmn_anysin_t* asin, char* buf);
+
+int anysin2str(const dmn_anysin_t* asin, char* buf) {
+    int name_err = 0;
+    buf[0] = 0;
+
+    char hostbuf[INET6_ADDRSTRLEN];
+    char servbuf[6];
+
+    memset(hostbuf,0,INET6_ADDRSTRLEN);
+    memset(servbuf,0,6);
+
+    hostbuf[0] = servbuf[0] = 0; // JIC getnameinfo leaves them un-init
+
+    if(asin) {
+        name_err = getnameinfo(&asin->sa, asin->len, hostbuf, INET6_ADDRSTRLEN, servbuf, 6, NI_NUMERICHOST);
+        if(!name_err) {
+            const bool isv6 = (asin->sa.sa_family == AF_INET6);
+            unsigned hostbuf_len = strlen(hostbuf);
+            const unsigned servbuf_len = strlen(servbuf);
+            dmn_assert((hostbuf_len + servbuf_len + (isv6 ? 4 : 2)) <= DMN_ANYSIN_MAXSTR);
+            char* bufptr = buf;
+            if(isv6)
+                *bufptr++ = '[';
+
+	    // The IPV6 address MIGHT contain the link local address & the interface => fe80::2000:bff:fe48:8b1a%eth0
+	    char* interface = strstr(hostbuf, "%");
+	    if (interface != NULL) {
+		hostbuf_len = interface - hostbuf;
+	    }
+
+            memcpy(bufptr, hostbuf, hostbuf_len);
+            bufptr += hostbuf_len;
+            if(isv6)
+                *bufptr++ = ']';
+            *bufptr++ = ':';
+            memcpy(bufptr, servbuf, servbuf_len + 1); // include NUL
+        }
+    }
+    else {
+        strcpy(buf, generic_nullstr);
+    }
+
+    return name_err;
+}
+
+
+
 gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUSED, const client_info_t* cinfo, dyn_result_t* result) {
 
     PWord_t PV = NULL;
@@ -848,7 +898,9 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
     }
 
     char s_client_info[DMN_ANYSIN_MAXSTR];
-    int name_err = dmn_anysin2str(&cinfo->dns_source, s_client_info);
+    memset(s_client_info, 0, DMN_ANYSIN_MAXSTR);
+    int name_err = anysin2str(&cinfo->dns_source, s_client_info);
+
     (void)name_err;
     const char* proxy_client = s_client_info;
 
@@ -945,6 +997,7 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	    char* val = (char*)malloc(256);
 	    sprintf(val, "%f,D,%s,%s,%s,%s,%s,%s,%u,%c", network_time,CFG.id,s_client_info, beacon, cid, cdata, s_edns_client, cinfo->qtype, cinfo->is_udp?'U':'T');
 	    // log_debug("%s", val);
+
 	    ++CFG.event_count;
 	    JError_t J_Error;
 	    if (((PV) = (PWord_t)JudyLIns(&CFG.event_cache, CFG.event_count, &J_Error)) == PJERR) {
