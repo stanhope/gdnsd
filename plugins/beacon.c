@@ -66,6 +66,7 @@ typedef struct {
     char ip[40];
     char ipV6[46];
     char domain[64];
+    char domains[256];		/* space delimited list of beacon domains, e.g 'jisusaiche.info beacon.info test.info' */
     char domain_test[64];
     char blackhole_ip[40];
     char blackhole_ipV6[46];
@@ -351,6 +352,13 @@ static bool config_res(const char* resname, unsigned resname_len V_UNUSED, vscf_
 	else {
 	    const char* val = vscf_simple_get_data(addr);
 	    strcpy(CFG.domain, val);
+	}
+    } else if (strcmp(resname, "domains") == 0) {
+	if (vscf_get_type(addr) != VSCF_SIMPLE_T)
+	    log_fatal("plugin_beacon: resource %s: must be a domainname in string form", resname);
+	else {
+	    const char* val = vscf_simple_get_data(addr);
+	    strcpy(CFG.domains, val);
 	}
     } else if (strcmp(resname, "domain_test") == 0) {
 	if (vscf_get_type(addr) != VSCF_SIMPLE_T)
@@ -693,6 +701,7 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
     CFG.ipV6[0] = 0;
     CFG.id[0] = 0;
     CFG.domain[0] = 0;
+    CFG.domains[0] = 0;
     CFG.domain_test[0] = 0;
     CFG.blackhole_ip[0] = 0;
     CFG.blackhole_as_refused = 0;
@@ -733,6 +742,7 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
 	printf("  'node_ipV6' not specified\n");
     }
 
+    // NOTE: domain is prefered. But domains can be optionally specified. Both will be checked during runtime processing"
     if (CFG.domain[0] == 0) {
 	printf("  'domain' not specified\n");
 	is_valid = 0;
@@ -747,8 +757,8 @@ void plugin_beacon_load_config(vscf_data_t* config, const unsigned num_threads V
 	printf("ERROR: Plugin not configured properly\n");
 	exit(1);
     } else {
-	log_debug("plugin_beacon: config id=%s ip=%s ipV6=%s domain=%s domain_test=%s blackhole=%s blackhole_ipV6=%s blackhole_as_refused=%s relay=%s statsd=%d channel=%s heartbeat=%d",
-		  CFG.id, CFG.ip, CFG.ipV6, CFG.domain, CFG.domain_test, CFG.blackhole_ip, CFG.blackhole_ipV6,
+	log_debug("plugin_beacon: config id=%s ip=%s ipV6=%s domain=%s domains='%s' domain_test=%s blackhole=%s blackhole_ipV6=%s blackhole_as_refused=%s relay=%s statsd=%d channel=%s heartbeat=%d",
+		  CFG.id, CFG.ip, CFG.ipV6, CFG.domain, CFG.domains, CFG.domain_test, CFG.blackhole_ip, CFG.blackhole_ipV6,
 		  CFG.blackhole_as_refused ? "true":"false", 
 		  CFG.relay?"true":"false",
 		  CFG.statsd_enabled,
@@ -926,6 +936,10 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
     if (cid == NULL || cdata == NULL || beacon == NULL) {
 	if (domain != NULL && strcmp(domain, CFG.domain) != 0) {
 	    is_valid = 0;
+	} else if (CFG.domains != NULL) {
+	    // Could be specified in CFG.domains
+	    if (strstr(domain, CFG.domains) == NULL)
+		is_valid = 0;
 	}
     } else  {
 	if (domain != NULL && domain[0] == 0) {
