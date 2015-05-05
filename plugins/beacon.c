@@ -819,7 +819,9 @@ int anysin2str(const dmn_anysin_t* asin, char* buf) {
             const bool isv6 = (asin->sa.sa_family == AF_INET6);
             unsigned hostbuf_len = strlen(hostbuf);
             const unsigned servbuf_len = strlen(servbuf);
+
             dmn_assert((hostbuf_len + servbuf_len + (isv6 ? 4 : 2)) <= DMN_ANYSIN_MAXSTR);
+
             char* bufptr = buf;
             if(isv6)
                 *bufptr++ = '[';
@@ -907,8 +909,8 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	domain = saveptr;
     }
 
-    char s_client_info[DMN_ANYSIN_MAXSTR];
-    memset(s_client_info, 0, DMN_ANYSIN_MAXSTR);
+    char s_client_info[DMN_ANYSIN_MAXSTR+10];
+    memset(s_client_info, 0, DMN_ANYSIN_MAXSTR+10);
     int name_err = anysin2str(&cinfo->dns_source, s_client_info);
 
     (void)name_err;
