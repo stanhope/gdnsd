@@ -798,6 +798,7 @@ int plugin_beacon_map_res(const char* resname, const uint8_t* origin V_UNUSED) {
 pthread_t DNS_TELEMETRY_THREAD;
 
 // The library provided version produced invalid IPV6 addresses. Fix inline in plugin for now.
+#define IP_HOST_LEN 128
 static const char* generic_nullstr = "(null)";
 int anysin2str(const dmn_anysin_t* asin, char* buf);
 
@@ -805,16 +806,16 @@ int anysin2str(const dmn_anysin_t* asin, char* buf) {
     int name_err = 0;
     buf[0] = 0;
 
-    char hostbuf[INET6_ADDRSTRLEN];
+    char hostbuf[IP_HOST_LEN];
     char servbuf[6];
 
-    memset(hostbuf,0,INET6_ADDRSTRLEN);
+    memset(hostbuf,0,IP_HOST_LEN);
     memset(servbuf,0,6);
 
     hostbuf[0] = servbuf[0] = 0; // JIC getnameinfo leaves them un-init
 
     if(asin) {
-        name_err = getnameinfo(&asin->sa, asin->len, hostbuf, INET6_ADDRSTRLEN, servbuf, 6, NI_NUMERICHOST);
+        name_err = getnameinfo(&asin->sa, asin->len, hostbuf, IP_HOST_LEN, servbuf, 6, NI_NUMERICHOST);
         if(!name_err) {
             const bool isv6 = (asin->sa.sa_family == AF_INET6);
             unsigned hostbuf_len = strlen(hostbuf);
@@ -846,8 +847,6 @@ int anysin2str(const dmn_anysin_t* asin, char* buf) {
 
     return name_err;
 }
-
-
 
 gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUSED, const client_info_t* cinfo, dyn_result_t* result) {
 
@@ -952,21 +951,23 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	}
     }
 
+    // log_debug("..%f %s => %s resnum=%u cid=%s cdata=%s beacon=%s domain=%s client=%s edns_client=%s is_valid=%d is_test=%d domain_test=%s is_proxy=%d\n", network_time, qname, result_ip,resnum,cid,cdata,beacon,domain,s_client_info, s_edns_client, is_valid, is_test, CFG.domain_test, is_proxy);
+
     if (!is_test) {
 	// cid can only be 4 characters
-	if (strlen(cid) != 4)
+	if (cid == NULL || strlen(cid) != 4)
 	    is_valid = 0;
     
 	// cdata can be <= 16 characters. Trim to 16 rather than concluding invalid.
-	if (strlen(cdata) > 16)
+	if (cdata != NULL && strlen(cdata) > 16)
 	    cdata[16] = 0;
     
 	// beacon must be 45 characters (e.g. use2ae4160014047f846aab247986cd7d164d21f4ceb5)
-	if (strlen(beacon) != 45)
+	if (beacon == NULL || strlen(beacon) != 45) {
 	    is_valid = 0;
+	}
     }
     
-    // printf("..%f %s => %s resnum=%u cid=%s cdata=%s beacon=%s domain=%s client=%s edns_client=%s is_valid=%d is_test=%d domain_test=%s is_proxy=%d\n", network_time, qname, result_ip,resnum,cid,cdata,beacon,domain,s_client_info, s_edns_client, is_valid, is_test, CFG.domain_test, is_proxy);
 
     if (is_valid) {
 	// Don't publish beacon telemetry if it was for the test domain
@@ -978,8 +979,6 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 
 	    // Track Client (typically a DNS Recursive) usage
 	    Word_t Index = cinfo->dns_source.sin.sin_addr.s_addr;
-	    // uint8_t* ch = (uint8_t*)&Index;
-	    // ch[3] = 0; // Anon to /24
 	    int    Rc_int; 
 	    J1T(Rc_int, UNIQUE_ARRAY_TOTAL, Index);
 	    if (Rc_int == 0) {
@@ -1026,16 +1025,33 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	dmn_anysin_t tmpsin;
 	gdnsd_anysin_fromstr(result_ip, 0, &tmpsin);
 	gdnsd_result_add_anysin(result, &tmpsin); 
-        // uint8_t cntmp[256];
-        // gdnsd_dname_from_string(cntmp, "jisusaiche.com.", 8);
-        // gdnsd_result_add_cname(result, cntmp, origin);
+
+	// OPTIONAL: Deliver additional section answers (AAAA for an A, A for an AAAA)
+	/*
+	  if (cinfo->qtype == 28) {
+	  result_ip = CFG.ip;
+	  gdnsd_anysin_fromstr(result_ip, 0, &tmpsin);
+	  gdnsd_result_add_anysin(result, &tmpsin); 
+	  } else {
+	  result_ip = CFG.ipV6;
+	  char* has_colon = strstr(result_ip, ":");
+	  if (has_colon != NULL) {
+	  log_debug("Adding AAAA additional %s\n", CFG.ipV6);
+	  gdnsd_anysin_fromstr(result_ip, 0, &tmpsin);
+	  gdnsd_result_add_anysin(result, &tmpsin); 
+	  } else {
+	  log_debug("NOT Adding AAAA additional %s\n", CFG.ipV6);
+	  }
+	  }
+	*/
 
 	// maybe we'll be forwarding the ednsclient along
 	if (is_proxy && CFG.relay != 0) {
 	    ngethostbyname(proxy_client, cinfo->edns_client_mask, result_ip, qname, T_A);
 	}
 
-   } else if (CFG.blackhole_as_refused) {
+    } 
+    else if (CFG.blackhole_as_refused) {
 	// REFUSED. Possibly not very kosher. But sort of equivalent of simply dropping the request.
 #ifdef STATSD
 	pthread_mutex_lock(&DYN_BEACON_MUTEX); 
@@ -1043,8 +1059,14 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	pthread_mutex_unlock(&DYN_BEACON_MUTEX); 
 #endif
 	((wire_dns_header_t*)cinfo->res_hdr)->flags2 = DNS_RCODE_REFUSED;
-    } else {
+    }
+    else {
 	// Return blackhole IP with no error
+	log_info("Invalid beacon ip=%s edns_client=%s qname=%s\n", s_client_info, s_edns_client, qname);
+    // log_debug("..%f %s => %s resnum=%u cid=%s cdata=%s beacon=%s domain=%s client=%s edns_client=%s is_valid=%d is_test=%d domain_test=%s is_proxy=%d\n", network_time, qname, result_ip,resnum,cid,cdata,beacon,domain,s_client_info, s_edns_client, is_valid, is_test, CFG.domain_test, is_proxy);
+
+
+
 #ifdef STATSD
 	pthread_mutex_lock(&DYN_BEACON_MUTEX); 
 	CFG.refused++;
@@ -1054,10 +1076,8 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
 	sprintf(val, "%s,%s,%s,%u,%c", s_client_info, qname, s_edns_client, cinfo->qtype, cinfo->is_udp?'U':'T');
 	dmn_anysin_t tmpsin;
 	if (cinfo->qtype == 28) {
-	    // log_info("BLACKHOLE V6 %s", val);
 	    gdnsd_anysin_fromstr(CFG.blackhole_ipV6, 0, &tmpsin);
 	} else {
-	    // log_info("BLACKHOLE %s", val);
 	    gdnsd_anysin_fromstr(CFG.blackhole_ip, 0, &tmpsin);
 	}
 	gdnsd_result_add_anysin(result, &tmpsin);
