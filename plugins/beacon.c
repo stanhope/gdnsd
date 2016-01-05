@@ -56,7 +56,7 @@
 
 static void redis_init(uint);
 void* dyn_beacon_timer (void * args);
-static u_char* convert_qname(const u_char* qdata);
+static u_char* convert_qname(const u_char* qdata, u_char* qname);
 
 pthread_mutex_t DYN_BEACON_MUTEX = PTHREAD_MUTEX_INITIALIZER;
 
@@ -281,11 +281,10 @@ void* dyn_beacon_timer(void * args V_UNUSED) {
     return NULL;
 }
 
-static u_char* convert_qname(const u_char* qdata) {
+static u_char* convert_qname(const u_char* qdata, u_char* qname) {
     u_int ofs = 0;
     u_int  qdatalen = strlen((const char*)qdata);
     u_int qnameofs = 0;
-    u_char* qname = NULL;
     u_int qnamelen = 0;
 
     /* Determine the length of the QNAME */
@@ -302,7 +301,7 @@ static u_char* convert_qname(const u_char* qdata) {
     /* Copy query name */
     ofs = 0;
     qnamelen++; /* added space for \0 */
-    qname = (u_char*) malloc((qnamelen) * sizeof(char));
+    // qname = (u_char*) malloc((qnamelen) * sizeof(char));
     memset(qname, 0, qnamelen);
     do {
 	int elemLen = qdata[ofs++];
@@ -877,7 +876,8 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
     u_int is_valid = 1;
     u_int is_test = 0;
     const u_char* qdata = cinfo->qname+1;
-    u_char* qname = convert_qname(qdata);
+    char temp[2048];
+    u_char* qname = convert_qname(qdata, (u_char*)temp);
 
     // printf("plugin_beacon_resolve is_udp=%u qtype=%u qname=%s\n", cinfo->is_udp, cinfo->qtype, qname);
 
@@ -885,8 +885,6 @@ gdnsd_sttl_t plugin_beacon_resolve(unsigned resnum, const uint8_t* origin V_UNUS
     // 1) V1 (Pre  Feb 2015): CID.CDATA.BEACON.DOMAIN
     // 2) V2 (Post Feb 2015): CID-CDATA-BEACON.DOMAIN
 
-    char temp[1024];
-    strcpy(temp, (char*)qname);
     char* saveptr, *domain;
     char *cid = NULL, *cdata = NULL, *beacon = NULL;
 
